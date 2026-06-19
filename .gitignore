@@ -15,6 +15,7 @@ weston/builddir*/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
+build_daemon_android/
 
 # Packages and generated artifacts
 *.apk
