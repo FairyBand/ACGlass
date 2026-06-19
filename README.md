@@ -31,7 +31,6 @@ The current design is:
 - `libdisplay_consumer/` - consumer-side display buffer reader.
 - `libdisplay_producer/` - producer-side display buffer writer.
 - `weston/` - patched Weston tree with the Anland backend.
-- `kdefix/` - optional KWin/Xwayland patch helpers.
 - `magisk_module/` - display daemon module template.
 
 ## Requirements
@@ -191,13 +190,7 @@ ACGLASS_START_DAEMON=1
 ACGLASS_START_ANDROID=1
 ```
 
-The lower-level Weston/KWin display backend is still named `anland` internally.
-For the optional native KWin path, the patched backend reads:
-
-```sh
-ANLAND_SOCKET=/data/local/tmp/display_daemon.sock
-ANLAND=1
-```
+The lower-level Weston display backend is still named `anland` internally.
 
 ## Current Limitations
 
