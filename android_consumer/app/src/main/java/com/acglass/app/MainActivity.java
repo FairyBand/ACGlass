@@ -3,6 +3,7 @@ package com.acglass.app;
 import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -19,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends Activity {
+    private static final String TAG = "ACGlass";
     private static final String ROOT_CHECKING =
         "\u6b63\u5728\u68c0\u6d4b root \u6743\u9650...";
     private static final String ROOT_GRANTED =
@@ -27,6 +29,8 @@ public class MainActivity extends Activity {
         "root \u6743\u9650\u83b7\u53d6\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u4f60\u7684\u7ba1\u7406\u5668\u662f\u5426\u6388\u6743";
     private static final String ROOT_RETRY =
         "\u91cd\u65b0\u68c0\u6d4b root \u6743\u9650";
+    private static final String LAUNCH_FAILED =
+        "Linux GUI \u5e94\u7528\u542f\u52a8\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u5bb9\u5668\u540e\u7aef\u914d\u7f6e";
 
     private LinearLayout appList;
     private TextView statusText;
@@ -194,8 +198,10 @@ public class MainActivity extends Activity {
             try {
                 RootDroidspaces.launchApp(this, container.name, app.command);
             } catch (Exception e) {
+                Log.e(TAG, "failed to launch " + container.name + ": " +
+                    app.command, e);
                 runOnUiThread(() -> Toast.makeText(this,
-                    ROOT_FAILED, Toast.LENGTH_LONG).show());
+                    LAUNCH_FAILED, Toast.LENGTH_LONG).show());
             }
         }, "acglass-launch").start();
     }

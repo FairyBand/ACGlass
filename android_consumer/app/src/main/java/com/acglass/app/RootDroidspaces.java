@@ -1,12 +1,15 @@
 package com.acglass.app;
 
 import android.content.Context;
+import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 
 final class RootDroidspaces {
+    private static final String TAG = "ACGlass";
+
     private RootDroidspaces() {
     }
 
@@ -29,10 +32,12 @@ final class RootDroidspaces {
         String droidspaces = ACGlassPrefs.getDroidspacesPath(context);
         String containersOutput = runRootCommand(
             shellQuote(droidspaces) + " show --format");
+        Log.i(TAG, "droidspaces show --format:\n" + containersOutput);
         StringBuilder appsJson = new StringBuilder("[");
         boolean firstContainer = true;
 
         for (String container : parseContainers(containersOutput)) {
+            Log.i(TAG, "scanning container: " + container);
             String apps = scanContainerApps(context, container);
             if (!firstContainer)
                 appsJson.append(',');
@@ -127,7 +132,10 @@ final class RootDroidspaces {
             if (eq <= 0)
                 continue;
             String key = token.substring(0, eq).toLowerCase();
+            String originalKey = token.substring(0, eq);
             String value = token.substring(eq + 1);
+            if (key.startsWith("cont_") && originalKey.length() > 5)
+                return originalKey.substring(5);
             if (key.equals("name") || key.equals("container") ||
                 key.equals("container_name"))
                 return value;
