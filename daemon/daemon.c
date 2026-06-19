@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -258,6 +259,10 @@ int main(int argc, char **argv)
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("bind");
+        return 1;
+    }
+    if (chmod(sock_path, 0666) < 0) {
+        perror("chmod");
         return 1;
     }
     if (listen(listen_fd, 4) < 0) {

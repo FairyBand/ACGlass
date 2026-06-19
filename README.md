@@ -134,14 +134,25 @@ ACGlass expects the Droidspaces command format used by Droidspaces v6.3.0:
 
 The Android settings page lets you configure:
 
-- Wayland display socket path.
+- Android display socket path.
+- Container display socket path.
 - Droidspaces CLI path.
 
 Defaults:
 
 ```text
-Wayland socket: /data/local/tmp/display_daemon.sock
+Android display socket: /data/local/tmp/display_daemon.sock
+Container display socket: /run/display.sock
 Droidspaces CLI: /data/local/Droidspaces/bin/droidspaces
+```
+
+The Android socket is created by the ACGlass Magisk module daemon. The
+container socket is the same Unix domain socket as seen from inside the Linux
+container. For Droidspaces, bind-mount the Android socket into the container,
+for example:
+
+```text
+/data/local/tmp/display_daemon.sock -> /run/display.sock
 ```
 
 If a container is not listed by `droidspaces show --format`, ACGlass will not
@@ -165,7 +176,7 @@ acglass-run <gui-command> [args...]
 With an explicit socket:
 
 ```sh
-acglass-run /data/local/tmp/display_daemon.sock -- <gui-command> [args...]
+acglass-run /run/display.sock -- <gui-command> [args...]
 ```
 
 Create wrappers for common GUI commands:
@@ -182,13 +193,19 @@ ACGlass automatically.
 Common overrides:
 
 ```sh
-ACGLASS_SOCKET=/data/local/tmp/display_daemon.sock
+ACGLASS_SOCKET=/run/display.sock
+ACGLASS_ANDROID_SOCKET=/data/local/tmp/display_daemon.sock
 ACGLASS_DAEMON_BIN=/data/adb/modules/acglass-daemon/display_daemon
 ACGLASS_AM_CMD=am
 ACGLASS_ACTIVITY=com.acglass.app/.DisplayActivity
-ACGLASS_START_DAEMON=1
-ACGLASS_START_ANDROID=1
+ACGLASS_START_DAEMON=0
+ACGLASS_START_ANDROID=0
 ```
+
+`ACGLASS_START_DAEMON` and `ACGLASS_START_ANDROID` default to `0` because the
+normal Droidspaces path starts the Android DisplayActivity from the ACGlass app,
+not from inside the Linux container. Set them to `1` only for manual debugging
+from an Android shell where the daemon binary and `am` command are available.
 
 The lower-level Weston display backend is still named `anland` internally.
 

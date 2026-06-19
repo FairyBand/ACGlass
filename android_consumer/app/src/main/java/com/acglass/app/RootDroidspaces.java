@@ -96,7 +96,11 @@ final class RootDroidspaces {
 
     static void launchApp(Context context, String container, String command)
         throws IOException, InterruptedException {
-        runInContainer(context, container, "acglass-run -- " + command);
+        String socket = ACGlassPrefs.getContainerSocketPath(context);
+        runInContainer(context, container,
+            "ACGLASS_SOCKET=" + shellQuote(socket) + " " +
+            "ACGLASS_START_ANDROID=0 ACGLASS_START_DAEMON=0 " +
+            "acglass-run -- " + command);
     }
 
     private static String runInContainer(Context context, String container,

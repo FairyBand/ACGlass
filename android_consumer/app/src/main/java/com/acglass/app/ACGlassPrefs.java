@@ -4,7 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 final class ACGlassPrefs {
-    static final String DEFAULT_SOCKET = "/data/local/tmp/display_daemon.sock";
+    static final String DEFAULT_ANDROID_SOCKET = "/data/local/tmp/display_daemon.sock";
+    static final String DEFAULT_CONTAINER_SOCKET = "/run/display.sock";
     static final String EXTRA_SOCKET = "com.acglass.app.SOCKET";
     static final String EXTRA_APP_NAME = "com.acglass.app.APP_NAME";
     static final String EXTRA_APP_COMMAND = "com.acglass.app.APP_COMMAND";
@@ -12,7 +13,8 @@ final class ACGlassPrefs {
     static final String ACTION_SYNC_APPS = "com.acglass.app.SYNC_APPS";
 
     private static final String PREFS = "acglass";
-    private static final String KEY_SOCKET = "socket_path";
+    private static final String KEY_ANDROID_SOCKET = "socket_path";
+    private static final String KEY_CONTAINER_SOCKET = "container_socket_path";
     private static final String KEY_APPS_JSON = "apps_json";
     private static final String KEY_DROIDSPACES = "droidspaces_path";
     private static final String DEFAULT_DROIDSPACES = "/data/local/Droidspaces/bin/droidspaces";
@@ -20,14 +22,24 @@ final class ACGlassPrefs {
     private ACGlassPrefs() {
     }
 
-    static String getSocketPath(Context context) {
-        return prefs(context).getString(KEY_SOCKET, DEFAULT_SOCKET);
+    static String getAndroidSocketPath(Context context) {
+        return prefs(context).getString(KEY_ANDROID_SOCKET, DEFAULT_ANDROID_SOCKET);
     }
 
-    static void setSocketPath(Context context, String socketPath) {
+    static void setAndroidSocketPath(Context context, String socketPath) {
         String value = socketPath == null || socketPath.trim().isEmpty()
-            ? DEFAULT_SOCKET : socketPath.trim();
-        prefs(context).edit().putString(KEY_SOCKET, value).apply();
+            ? DEFAULT_ANDROID_SOCKET : socketPath.trim();
+        prefs(context).edit().putString(KEY_ANDROID_SOCKET, value).apply();
+    }
+
+    static String getContainerSocketPath(Context context) {
+        return prefs(context).getString(KEY_CONTAINER_SOCKET, DEFAULT_CONTAINER_SOCKET);
+    }
+
+    static void setContainerSocketPath(Context context, String socketPath) {
+        String value = socketPath == null || socketPath.trim().isEmpty()
+            ? DEFAULT_CONTAINER_SOCKET : socketPath.trim();
+        prefs(context).edit().putString(KEY_CONTAINER_SOCKET, value).apply();
     }
 
     static String getAppsJson(Context context) {

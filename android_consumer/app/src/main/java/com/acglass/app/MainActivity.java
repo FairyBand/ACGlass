@@ -188,7 +188,7 @@ public class MainActivity extends Activity {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT |
                         Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
         intent.putExtra(ACGlassPrefs.EXTRA_SOCKET,
-                        ACGlassPrefs.getSocketPath(this));
+                        ACGlassPrefs.getAndroidSocketPath(this));
         intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME,
                         container.name + ": " + app.name);
         intent.putExtra(ACGlassPrefs.EXTRA_APP_COMMAND, app.command);

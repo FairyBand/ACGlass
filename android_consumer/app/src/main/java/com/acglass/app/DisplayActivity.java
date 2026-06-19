@@ -46,7 +46,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         setContentView(surfaceView);
         surfaceView.getHolder().addCallback(this);
 
-        socketPath = ACGlassPrefs.getSocketPath(this);
+        socketPath = ACGlassPrefs.getAndroidSocketPath(this);
         updateSocketPath(getIntent());
         setupCursorHiding();
     }
@@ -66,7 +66,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     }
 
     private boolean updateSocketPath(Intent intent) {
-        String nextSocketPath = ACGlassPrefs.getSocketPath(this);
+        String nextSocketPath = ACGlassPrefs.getAndroidSocketPath(this);
         if (intent != null) {
             String appName = intent.getStringExtra(ACGlassPrefs.EXTRA_APP_NAME);
             if (appName != null && !appName.isEmpty())
@@ -77,11 +77,11 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
                 nextSocketPath = extraSocketPath;
         }
         if (nextSocketPath == null || nextSocketPath.isEmpty())
-            nextSocketPath = ACGlassPrefs.getSocketPath(this);
+            nextSocketPath = ACGlassPrefs.getAndroidSocketPath(this);
         if (nextSocketPath.equals(socketPath))
             return false;
         socketPath = nextSocketPath;
-        ACGlassPrefs.setSocketPath(this, socketPath);
+        ACGlassPrefs.setAndroidSocketPath(this, socketPath);
         nativeSetSocketPath(socketPath);
         Log.i(TAG, "socket: " + socketPath);
         return true;

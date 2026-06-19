@@ -11,7 +11,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 public class SettingsActivity extends Activity {
-    private EditText socketEdit;
+    private EditText androidSocketEdit;
+    private EditText containerSocketEdit;
     private EditText droidspacesEdit;
 
     @Override
@@ -31,19 +32,35 @@ public class SettingsActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        TextView label = new TextView(this);
-        label.setText("Wayland display socket");
-        label.setTextSize(14);
-        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
+        TextView androidSocketLabel = new TextView(this);
+        androidSocketLabel.setText("Android display socket");
+        androidSocketLabel.setTextSize(14);
+        LinearLayout.LayoutParams androidSocketLabelLp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT);
-        labelLp.topMargin = dp(24);
-        root.addView(label, labelLp);
+        androidSocketLabelLp.topMargin = dp(24);
+        root.addView(androidSocketLabel, androidSocketLabelLp);
 
-        socketEdit = new EditText(this);
-        socketEdit.setSingleLine(true);
-        socketEdit.setText(ACGlassPrefs.getSocketPath(this));
-        root.addView(socketEdit, new LinearLayout.LayoutParams(
+        androidSocketEdit = new EditText(this);
+        androidSocketEdit.setSingleLine(true);
+        androidSocketEdit.setText(ACGlassPrefs.getAndroidSocketPath(this));
+        root.addView(androidSocketEdit, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView containerSocketLabel = new TextView(this);
+        containerSocketLabel.setText("Container display socket");
+        containerSocketLabel.setTextSize(14);
+        LinearLayout.LayoutParams containerSocketLabelLp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT);
+        containerSocketLabelLp.topMargin = dp(16);
+        root.addView(containerSocketLabel, containerSocketLabelLp);
+
+        containerSocketEdit = new EditText(this);
+        containerSocketEdit.setSingleLine(true);
+        containerSocketEdit.setText(ACGlassPrefs.getContainerSocketPath(this));
+        root.addView(containerSocketEdit, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -66,9 +83,13 @@ public class SettingsActivity extends Activity {
         Button saveButton = new Button(this);
         saveButton.setText("Save");
         saveButton.setOnClickListener(v -> {
-            ACGlassPrefs.setSocketPath(this, socketEdit.getText().toString());
+            ACGlassPrefs.setAndroidSocketPath(this,
+                androidSocketEdit.getText().toString());
+            ACGlassPrefs.setContainerSocketPath(this,
+                containerSocketEdit.getText().toString());
             ACGlassPrefs.setDroidspacesPath(this, droidspacesEdit.getText().toString());
-            socketEdit.setText(ACGlassPrefs.getSocketPath(this));
+            androidSocketEdit.setText(ACGlassPrefs.getAndroidSocketPath(this));
+            containerSocketEdit.setText(ACGlassPrefs.getContainerSocketPath(this));
             droidspacesEdit.setText(ACGlassPrefs.getDroidspacesPath(this));
             Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show();
         });

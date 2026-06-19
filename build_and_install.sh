@@ -79,7 +79,7 @@ ldconfig "$PREFIX/lib/aarch64-linux-gnu"
 LIBDIR="$PREFIX/lib/aarch64-linux-gnu"
 cat > "$PREFIX/start.sh" << EOF
 #!/bin/bash
-SOCK="\${1:-/data/local/tmp/display_daemon.sock}"
+SOCK="\${1:-/run/display.sock}"
 
 export LD_LIBRARY_PATH="$LIBDIR:$LIBDIR/libweston-16:$LIBDIR/weston:\$LD_LIBRARY_PATH"
 export XDG_RUNTIME_DIR="\${XDG_RUNTIME_DIR:-/tmp}"
@@ -105,12 +105,13 @@ chmod +x "$PREFIX/start.sh"
 
 cat > "$PREFIX/start_app.sh" << 'EOF'
 #!/bin/bash
-SOCK="${ACGLASS_SOCKET:-/data/local/tmp/display_daemon.sock}"
+SOCK="${ACGLASS_SOCKET:-/run/display.sock}"
+ANDROID_SOCK="${ACGLASS_ANDROID_SOCKET:-/data/local/tmp/display_daemon.sock}"
 DAEMON_BIN="${ACGLASS_DAEMON_BIN:-/data/adb/modules/acglass-daemon/display_daemon}"
 ACTIVITY="${ACGLASS_ACTIVITY:-com.acglass.app/.DisplayActivity}"
 AM_CMD="${ACGLASS_AM_CMD:-am}"
-START_ANDROID="${ACGLASS_START_ANDROID:-1}"
-START_DAEMON="${ACGLASS_START_DAEMON:-1}"
+START_ANDROID="${ACGLASS_START_ANDROID:-0}"
+START_DAEMON="${ACGLASS_START_DAEMON:-0}"
 
 if [ "$#" -gt 0 ] && [ "${1:-}" != "--" ] && [ "${1#/}" != "$1" ]; then
     SOCK="$1"
@@ -152,7 +153,7 @@ start_android_consumer() {
         echo "      Set ACGLASS_AM_CMD or start $ACTIVITY manually." >&2
         return 0
     }
-    $AM_CMD start -n "$ACTIVITY" --es com.acglass.app.SOCKET "$SOCK" >/dev/null 2>&1 || {
+    $AM_CMD start -n "$ACTIVITY" --es com.acglass.app.SOCKET "$ANDROID_SOCK" >/dev/null 2>&1 || {
         echo "WARN: failed to start Android consumer Activity: $ACTIVITY" >&2
         return 0
     }
@@ -168,6 +169,12 @@ ensure_consumer_ready() {
 ensure_daemon
 start_android_consumer
 ensure_consumer_ready
+
+if [ ! -S "$SOCK" ]; then
+    echo "ERROR: display daemon socket not found at container path: $SOCK" >&2
+    echo "       Bind-mount /data/local/tmp/display_daemon.sock into the container, or set ACGLASS_SOCKET." >&2
+    exit 1
+fi
 
 export LD_LIBRARY_PATH="@LIBDIR@:@LIBDIR@/libweston-16:@LIBDIR@/weston:$LD_LIBRARY_PATH"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -360,4 +367,4 @@ echo "=== Done ==="
 echo "  Installed to: $PREFIX"
 echo "  Start:        $PREFIX/start.sh [socket-path]"
 echo "  Start app:    $PREFIX/start_app.sh [socket-path] -- <wayland-app> [args...]"
-echo "  Default sock: /data/local/tmp/display_daemon.sock"
+echo "  Default sock: /run/display.sock"
