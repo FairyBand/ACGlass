@@ -1,0 +1,25 @@
+ACGlass Notices
+================
+
+ACGlass is a derived Android-container GUI project. It includes new ACGlass
+launcher, Droidspaces integration, container app scanning, and single-app
+window startup work.
+
+Upstream code and project references:
+
+- anland - android wayland implement
+  https://github.com/superturtlee/anland
+
+  Portions of this repository are derived from the anland project, including
+  the Android Wayland display path, display daemon/consumer/producer structure,
+  and Weston Anland backend work. The upstream repository did not expose an
+  explicit license file in the GitHub repository view at the time this notice
+  was added. Keep this attribution when reusing ACGlass code derived from
+  anland.
+
+- Droidspaces OSS - android container implement
+  https://github.com/ravindu644/Droidspaces-OSS
+
+  ACGlass integrates with the Droidspaces CLI and targets Droidspaces
+  containers as its first supported Android container backend. Droidspaces OSS
+  is a separate project and is not bundled as source code in this repository.

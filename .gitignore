@@ -1,0 +1,31 @@
+.codex/
+.agents/
+
+# Android / Gradle build outputs
+.gradle/
+build/
+android_consumer/.gradle/
+android_consumer/build/
+android_consumer/app/build/
+android_consumer/local.properties
+
+# Native build outputs
+weston/builddir*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Packages and generated artifacts
+*.apk
+*.aab
+*.zip
+*.tar.gz
+*.deb
+magisk_module/display_daemon
+
+# Editor / OS files
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+Desktop.ini

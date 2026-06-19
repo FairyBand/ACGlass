@@ -1,0 +1,6 @@
+id=acglass-daemon
+name=ACGlass Display Daemon
+version=1.0
+versionCode=1
+author=ACGlass
+description=Display daemon for ACGlass Android Container GUI windows
