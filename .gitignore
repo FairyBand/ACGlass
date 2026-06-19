@@ -7,6 +7,7 @@ build/
 android_consumer/.gradle/
 android_consumer/build/
 android_consumer/app/build/
+android_consumer/app/.cxx/
 android_consumer/local.properties
 
 # Native build outputs
