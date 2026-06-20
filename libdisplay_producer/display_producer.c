@@ -280,6 +280,15 @@ int trigger_refresh(display_ctx *ctx)
 
 int poll_input_event(display_ctx *ctx, struct InputEvent *event, int timeout_ms)
 {
+    struct WindowCommand command;
+    int ret = poll_display_event(ctx, event, &command, timeout_ms);
+    if (ret == DATA_MSG_INPUT_EVENT)
+        return 1;
+    return ret < 0 ? ret : 0;
+}
+
+int poll_display_event(display_ctx *ctx, struct InputEvent *input, struct WindowCommand *command, int timeout_ms)
+{
     if (ctx->fallback)
         return 0;
 
@@ -300,13 +309,63 @@ int poll_input_event(display_ctx *ctx, struct InputEvent *event, int timeout_ms)
 
     struct data_msg hdr;
     memcpy(&hdr, msg_buf, sizeof(hdr));
-    if (hdr.type != DATA_MSG_INPUT_EVENT)
-        return 0;
+    if (hdr.type == DATA_MSG_INPUT_EVENT) {
+        if (hdr.size != sizeof(struct InputEvent)) {
+            enter_fallback(ctx);
+            return -1;
+        }
+        if (recv_all(ctx->data_fd, msg_buf, sizeof(struct data_msg) + sizeof(struct InputEvent)) < 0)
+            return -1;
 
-    if (recv_all(ctx->data_fd, msg_buf, sizeof(struct data_msg) + sizeof(struct InputEvent)) < 0)
+        memcpy(input, msg_buf + sizeof(struct data_msg), sizeof(*input));
+        return DATA_MSG_INPUT_EVENT;
+    }
+
+    if (hdr.type == DATA_MSG_WINDOW_COMMAND) {
+        if (hdr.size != sizeof(struct WindowCommand)) {
+            enter_fallback(ctx);
+            return -1;
+        }
+        if (recv_all(ctx->data_fd, msg_buf, sizeof(struct data_msg) + sizeof(struct WindowCommand)) < 0)
+            return -1;
+
+        memcpy(command, msg_buf + sizeof(struct data_msg), sizeof(*command));
+        return DATA_MSG_WINDOW_COMMAND;
+    }
+
+    if (hdr.size > 4096) {
+        enter_fallback(ctx);
+        return -1;
+    }
+
+    if (recv_all(ctx->data_fd, msg_buf, sizeof(struct data_msg)) < 0)
         return -1;
 
-    memcpy(event, msg_buf + sizeof(struct data_msg), sizeof(*event));
+    while (hdr.size > 0) {
+        char discard[256];
+        size_t chunk = hdr.size > sizeof(discard) ? sizeof(discard) : hdr.size;
+        if (recv_all(ctx->data_fd, discard, chunk) < 0)
+            return -1;
+        hdr.size -= chunk;
+    }
+
+    return 0;
+}
+
+int push_window_event(display_ctx *ctx, const struct WindowEvent *event)
+{
+    if (ctx->fallback)
+        return 0;
+
+    struct data_msg hdr = { .type = DATA_MSG_WINDOW_EVENT, .size = sizeof(struct WindowEvent) };
+    uint8_t msg[sizeof(struct data_msg) + sizeof(struct WindowEvent)];
+    memcpy(msg, &hdr, sizeof(hdr));
+    memcpy(msg + sizeof(hdr), event, sizeof(*event));
+
+    if (send_all(ctx->data_fd, msg, sizeof(msg)) < 0) {
+        enter_fallback(ctx);
+        return -1;
+    }
     return 1;
 }
 

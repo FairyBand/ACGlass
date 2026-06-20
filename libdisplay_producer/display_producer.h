@@ -14,6 +14,8 @@ int  wait_buffer_async(display_ctx *ctx);
 int  wait_buffer_async_result(display_ctx *ctx, void **buffer);
 int  trigger_refresh(display_ctx *ctx);
 int  poll_input_event(display_ctx *ctx, struct InputEvent *event, int timeout_ms);
+int  poll_display_event(display_ctx *ctx, struct InputEvent *input, struct WindowCommand *command, int timeout_ms);
+int  push_window_event(display_ctx *ctx, const struct WindowEvent *event);
 int  set_fallback_callback(display_ctx *ctx, void (*on_fallback)(void *), void *userdata);
 bool is_fallback(display_ctx *ctx);
 int  try_reconnect(display_ctx *ctx);

@@ -1,6 +1,7 @@
 install_headers(
 	'colorimetry.h',
 	'config-parser.h',
+	'anland-window-api.h',
 	'libweston.h',
 	'linalg.h',
 	'linalg-3.h',

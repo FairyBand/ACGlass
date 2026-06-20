@@ -14,6 +14,8 @@
 #define DATA_MSG_REFRESH_DONE    101
 #define DATA_MSG_INPUT_EVENT     102
 #define DATA_MSG_BUFS_READY      200
+#define DATA_MSG_WINDOW_EVENT    300
+#define DATA_MSG_WINDOW_COMMAND  301
 
 #define MAX_BUFS 8
 
@@ -83,6 +85,29 @@ struct InputEvent {
             int32_t  discrete;
         } pointer_axis;
     };
+} __attribute__((packed));
+
+#define WINDOW_EVENT_OPENED      1
+#define WINDOW_EVENT_CLOSED      2
+#define WINDOW_EVENT_MINIMIZED   3
+#define WINDOW_EVENT_RESTORED    4
+
+#define WINDOW_COMMAND_RESTORE   1
+
+#define WINDOW_EVENT_APP_ID_MAX  128
+#define WINDOW_EVENT_TITLE_MAX   128
+
+struct WindowEvent {
+    uint32_t type;
+    uint32_t window_id;
+    uint32_t pid;
+    char     app_id[WINDOW_EVENT_APP_ID_MAX];
+    char     title[WINDOW_EVENT_TITLE_MAX];
+} __attribute__((packed));
+
+struct WindowCommand {
+    uint32_t type;
+    uint32_t window_id;
 } __attribute__((packed));
 
 #endif

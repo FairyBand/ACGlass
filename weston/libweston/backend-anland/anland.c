@@ -11,6 +11,7 @@
 
 #include <libweston/libweston.h>
 #include <libweston/backend-anland.h>
+#include <libweston/anland-window-api.h>
 #include "shared/helpers.h"
 #include "pixel-formats.h"
 #include "renderer-gl/gl-renderer.h"
@@ -55,6 +56,8 @@ struct anland_backend {
 	bool consumer_ready;
 	bool dmabuf_received;
 	bool in_fallback;
+	weston_anland_window_command_handler_t window_command_handler;
+	void *window_command_userdata;
 
 	const struct pixel_format_info **formats;
 	unsigned int formats_count;
@@ -268,6 +271,32 @@ anland_process_input_event(struct anland_backend *b, const struct InputEvent *ev
 	}
 }
 
+static struct anland_backend *
+anland_backend_from_compositor(struct weston_compositor *compositor)
+{
+	struct weston_backend *backend;
+
+	wl_list_for_each(backend, &compositor->backend_list, link) {
+		if (backend->destroy == anland_destroy)
+			return to_anland_backend(backend);
+	}
+
+	return NULL;
+}
+
+static void
+anland_process_window_command(struct anland_backend *b,
+			      const struct WindowCommand *command)
+{
+	if (!b->window_command_handler)
+		return;
+
+	b->window_command_handler(b->compositor,
+				  command->type,
+				  command->window_id,
+				  b->window_command_userdata);
+}
+
 static int
 anland_input_fd_handler(int fd, uint32_t mask, void *data);
 
@@ -360,12 +389,18 @@ anland_input_fd_handler(int fd, uint32_t mask, void *data)
 {
 	struct anland_backend *b = data;
 	struct InputEvent ev;
+	struct WindowCommand command;
+	int ret;
 
 	if (b->in_fallback)
 		return 0;
 
-	while (poll_input_event(b->display, &ev, 0) > 0)
-		anland_process_input_event(b, &ev);
+	while ((ret = poll_display_event(b->display, &ev, &command, 0)) > 0) {
+		if (ret == DATA_MSG_INPUT_EVENT)
+			anland_process_input_event(b, &ev);
+		else if (ret == DATA_MSG_WINDOW_COMMAND)
+			anland_process_window_command(b, &command);
+	}
 
 	return 0;
 }
@@ -878,6 +913,52 @@ static const struct weston_windowed_output_api api = {
 	anland_head_create,
 };
 
+static void
+anland_send_window_event(struct weston_compositor *compositor,
+			 uint32_t type,
+			 uint32_t window_id,
+			 uint32_t pid,
+			 const char *app_id,
+			 const char *title)
+{
+	struct anland_backend *b = anland_backend_from_compositor(compositor);
+	struct WindowEvent event = {
+		.type = type,
+		.window_id = window_id,
+		.pid = pid,
+	};
+
+	if (!b || !b->display)
+		return;
+
+	if (app_id)
+		strncpy(event.app_id, app_id, sizeof(event.app_id) - 1);
+	if (title)
+		strncpy(event.title, title, sizeof(event.title) - 1);
+
+	push_window_event(b->display, &event);
+}
+
+static void
+anland_set_window_command_handler(
+	struct weston_compositor *compositor,
+	weston_anland_window_command_handler_t handler,
+	void *userdata)
+{
+	struct anland_backend *b = anland_backend_from_compositor(compositor);
+
+	if (!b)
+		return;
+
+	b->window_command_handler = handler;
+	b->window_command_userdata = userdata;
+}
+
+static const struct weston_anland_window_api window_api = {
+	anland_send_window_event,
+	anland_set_window_command_handler,
+};
+
 static struct anland_backend *
 anland_backend_create(struct weston_compositor *compositor,
 		    struct weston_anland_backend_config *config)
@@ -981,6 +1062,14 @@ renderer_ok:
 					 &api, sizeof(api));
 	if (ret < 0) {
 		weston_log("anland: failed to register output API\n");
+		goto err_display;
+	}
+
+	ret = weston_plugin_api_register(compositor,
+					 WESTON_ANLAND_WINDOW_API_NAME,
+					 &window_api, sizeof(window_api));
+	if (ret < 0) {
+		weston_log("anland: failed to register window API\n");
 		goto err_display;
 	}
 

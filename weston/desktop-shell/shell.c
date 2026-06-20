@@ -44,6 +44,7 @@
 #include "shared/timespec-util.h"
 #include "shared/string-helpers.h"
 #include "shared/xalloc.h"
+#include <libweston/anland-window-api.h>
 #include <libweston/shell-utils.h>
 #include <libweston/desktop.h>
 
@@ -1883,6 +1884,82 @@ get_shell_surface(struct weston_surface *surface)
 }
 
 static void
+acglass_emit_window_event(struct shell_surface *shsurf, uint32_t type)
+{
+	const struct weston_anland_window_api *api;
+	const char *app_id;
+	const char *title;
+	pid_t pid;
+
+	if (!shsurf || !shsurf->desktop_surface)
+		return;
+
+	api = weston_anland_window_get_api(shsurf->shell->compositor);
+	if (!api || !api->send_window_event)
+		return;
+
+	app_id = weston_desktop_surface_get_app_id(shsurf->desktop_surface);
+	title = weston_desktop_surface_get_title(shsurf->desktop_surface);
+	pid = weston_desktop_surface_get_pid(shsurf->desktop_surface);
+
+	api->send_window_event(shsurf->shell->compositor,
+			       type,
+			       shsurf->acglass_window_id,
+			       pid > 0 ? (uint32_t)pid : 0,
+			       app_id,
+			       title);
+}
+
+static struct shell_surface *
+acglass_find_window(struct desktop_shell *shell, uint32_t window_id)
+{
+	struct shell_surface *shsurf;
+
+	wl_list_for_each(shsurf, &shell->shsurf_list, link) {
+		if (shsurf->acglass_window_id == window_id)
+			return shsurf;
+	}
+
+	return NULL;
+}
+
+static void
+acglass_restore_window(struct desktop_shell *shell, uint32_t window_id)
+{
+	struct shell_surface *shsurf = acglass_find_window(shell, window_id);
+	struct workspace *ws;
+	struct weston_seat *seat;
+
+	if (!shsurf || !shsurf->view)
+		return;
+
+	ws = get_current_workspace(shell);
+	weston_view_move_to_layer(shsurf->view, &ws->layer.view_list);
+	shell_surface_update_child_surface_layers(shsurf);
+
+	wl_list_for_each(seat, &shell->compositor->seat_list, link)
+		activate(shell, shsurf->view, seat,
+			 WESTON_ACTIVATE_FLAG_CONFIGURE);
+
+	weston_compositor_damage_all(shell->compositor);
+	acglass_emit_window_event(shsurf, WESTON_ANLAND_WINDOW_EVENT_RESTORED);
+}
+
+static void
+acglass_window_command_handler(struct weston_compositor *compositor,
+			       uint32_t type,
+			       uint32_t window_id,
+			       void *userdata)
+{
+	struct desktop_shell *shell = userdata;
+
+	(void)compositor;
+
+	if (type == WESTON_ANLAND_WINDOW_COMMAND_RESTORE)
+		acglass_restore_window(shell, window_id);
+}
+
+static void
 desktop_surface_update_label(struct wl_listener *listener, void *data)
 {
 	struct weston_desktop_surface *desktop_surface = data;
@@ -1902,6 +1979,7 @@ static void
 desktop_surface_added(struct weston_desktop_surface *desktop_surface,
 		      void *shell)
 {
+	struct desktop_shell *desktop_shell = shell;
 	struct weston_desktop_client *client =
 		weston_desktop_surface_get_client(desktop_surface);
 	struct wl_client *wl_client =
@@ -1925,7 +2003,10 @@ desktop_surface_added(struct weston_desktop_surface *desktop_surface,
 		return;
 	}
 
-	shsurf->shell = (struct desktop_shell *) shell;
+	shsurf->shell = desktop_shell;
+	shsurf->acglass_window_id = ++desktop_shell->acglass_next_window_id;
+	if (shsurf->acglass_window_id == 0)
+		shsurf->acglass_window_id = ++desktop_shell->acglass_next_window_id;
 	shsurf->unresponsive = 0;
 	shsurf->saved_position_valid = false;
 	shsurf->saved_rotation_valid = false;
@@ -1960,6 +2041,8 @@ desktop_surface_added(struct weston_desktop_surface *desktop_surface,
 	shsurf->surface_label_update.notify = desktop_surface_update_label;
 	weston_desktop_surface_add_metadata_listener(desktop_surface,
 						     &shsurf->surface_label_update);
+
+	acglass_emit_window_event(shsurf, WESTON_ANLAND_WINDOW_EVENT_OPENED);
 }
 
 static void
@@ -1974,6 +2057,8 @@ desktop_surface_removed(struct weston_desktop_surface *desktop_surface,
 
 	if (!shsurf)
 		return;
+
+	acglass_emit_window_event(shsurf, WESTON_ANLAND_WINDOW_EVENT_CLOSED);
 
 	wl_list_for_each(seat, &shsurf->shell->compositor->seat_list, link) {
 		struct shell_seat *shseat = get_shell_seat(seat);
@@ -2456,6 +2541,8 @@ desktop_surface_minimized_requested(struct weston_desktop_surface *desktop_surfa
 
 	 /* apply compositor's own minimization logic (hide) */
 	set_minimized(surface);
+	acglass_emit_window_event(weston_desktop_surface_get_user_data(desktop_surface),
+				  WESTON_ANLAND_WINDOW_EVENT_MINIMIZED);
 }
 
 static void
@@ -4603,6 +4690,7 @@ shell_destroy(struct wl_listener *listener, void *data)
 		container_of(listener, struct desktop_shell, destroy_listener);
 	struct shell_output *shell_output, *tmp;
 	struct shell_seat *shseat, *shseat_next;
+	const struct weston_anland_window_api *api;
 
 	/* Force state to unlocked so we don't try to fade */
 	shell->locked = false;
@@ -4612,6 +4700,10 @@ shell_destroy(struct wl_listener *listener, void *data)
 		wl_list_remove(&shell->child.client_destroy_listener.link);
 		wl_client_destroy(shell->child.client);
 	}
+
+	api = weston_anland_window_get_api(shell->compositor);
+	if (api && api->set_window_command_handler)
+		api->set_window_command_handler(shell->compositor, NULL, NULL);
 
 	wl_list_remove(&shell->destroy_listener.link);
 	wl_list_remove(&shell->idle_listener.link);
@@ -4786,6 +4878,7 @@ wet_shell_init(struct weston_compositor *ec,
 		return -1;
 
 	shell->compositor = ec;
+	shell->acglass_next_window_id = 0;
 
 	if (!weston_compositor_add_destroy_listener_once(ec,
 							 &shell->destroy_listener,
@@ -4870,6 +4963,13 @@ wet_shell_init(struct weston_compositor *ec,
 	screenshooter_create(ec);
 
 	shell_add_bindings(ec, shell);
+
+	const struct weston_anland_window_api *api =
+		weston_anland_window_get_api(ec);
+	if (api && api->set_window_command_handler)
+		api->set_window_command_handler(ec,
+						acglass_window_command_handler,
+						shell);
 
 	shell_fade_init(shell);
 

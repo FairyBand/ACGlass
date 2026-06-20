@@ -82,6 +82,12 @@ Java_com_acglass_app_MainActivity_nativeSendMouseButton(
 JNIEXPORT void JNICALL
 Java_com_acglass_app_MainActivity_nativeSendMouseScroll(
     JNIEnv *env, jobject thiz, jint axis, jfloat value);
+JNIEXPORT jlong JNICALL
+Java_com_acglass_app_DisplayActivity_nativePollWindowEvent(
+    JNIEnv *env, jobject thiz, jint timeout_ms);
+JNIEXPORT jboolean JNICALL
+Java_com_acglass_app_DisplayActivity_nativeSendWindowCommand(
+    JNIEnv *env, jobject thiz, jint type, jint window_id);
 
 static int find_buf_index(struct consumer_state *s, int fd)
 {
@@ -593,4 +599,46 @@ Java_com_acglass_app_DisplayActivity_nativeSendMouseScroll(
 {
     Java_com_acglass_app_MainActivity_nativeSendMouseScroll(env, thiz,
                                                                 axis, value);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_acglass_app_DisplayActivity_nativePollWindowEvent(
+    JNIEnv *env, jobject thiz, jint timeout_ms)
+{
+    struct WindowEvent event;
+    int ret;
+
+    pthread_mutex_lock(&g_state.lock);
+    if (!g_state.ctx) {
+        pthread_mutex_unlock(&g_state.lock);
+        return 0;
+    }
+    ret = poll_window_event(g_state.ctx, &event, timeout_ms);
+    pthread_mutex_unlock(&g_state.lock);
+
+    if (ret <= 0)
+        return 0;
+
+    return ((jlong)event.type << 32) | (jlong)event.window_id;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_acglass_app_DisplayActivity_nativeSendWindowCommand(
+    JNIEnv *env, jobject thiz, jint type, jint window_id)
+{
+    struct WindowCommand command = {
+        .type = (uint32_t)type,
+        .window_id = (uint32_t)window_id,
+    };
+    int ret;
+
+    pthread_mutex_lock(&g_state.lock);
+    if (!g_state.ctx) {
+        pthread_mutex_unlock(&g_state.lock);
+        return JNI_FALSE;
+    }
+    ret = push_window_command(g_state.ctx, &command);
+    pthread_mutex_unlock(&g_state.lock);
+
+    return ret > 0 ? JNI_TRUE : JNI_FALSE;
 }

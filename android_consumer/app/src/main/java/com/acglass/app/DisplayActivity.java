@@ -26,6 +26,11 @@ import android.widget.Toast;
 public class DisplayActivity extends Activity implements SurfaceHolder.Callback {
     private static final String TAG = "ACGlass";
     private static final long BACK_EXIT_WINDOW_MS = 1600;
+    private static final int WINDOW_EVENT_OPENED = 1;
+    private static final int WINDOW_EVENT_CLOSED = 2;
+    private static final int WINDOW_EVENT_MINIMIZED = 3;
+    private static final int WINDOW_EVENT_RESTORED = 4;
+    private static final int WINDOW_COMMAND_RESTORE = 1;
     private static final String BACK_CLOSE_APP =
         "\u518d\u6b21\u8fd4\u56de\u5173\u95ed\u5f53\u524d Linux \u5e94\u7528";
     private static final String BACK_CLOSE_MONITOR =
@@ -38,6 +43,10 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     private String appId;
     private long lastBackPressTime;
     private boolean closingFromBack;
+    private volatile boolean windowEventThreadRunning;
+    private volatile boolean windowMinimizedByCompositor;
+    private volatile int lastWindowId;
+    private Thread windowEventThread;
     private OnBackInvokedCallback backInvokedCallback;
     private BroadcastReceiver appFinishedReceiver;
 
@@ -54,6 +63,8 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     private native void nativeSendMouseMotion(float x, float y, float dx, float dy);
     private native void nativeSendMouseButton(int button, boolean pressed);
     private native void nativeSendMouseScroll(int axis, float value);
+    private native long nativePollWindowEvent(int timeoutMs);
+    private native boolean nativeSendWindowCommand(int type, int windowId);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -74,6 +85,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         setupAppFinishedReceiver();
         setupCursorHiding();
         setupBackHandling();
+        startWindowEventThread();
         hideSystemBars();
     }
 
@@ -169,6 +181,8 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         if (surfaceReady) {
             nativeStop();
             nativeStart(surfaceView.getHolder().getSurface());
+            if (windowMinimizedByCompositor)
+                requestRestoreLastWindow();
         }
     }
 
@@ -208,7 +222,62 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
             unregisterReceiver(appFinishedReceiver);
             appFinishedReceiver = null;
         }
+        stopWindowEventThread();
         super.onDestroy();
+    }
+
+    private void startWindowEventThread() {
+        if (windowEventThreadRunning)
+            return;
+        windowEventThreadRunning = true;
+        windowEventThread = new Thread(() -> {
+            while (windowEventThreadRunning) {
+                long packed = nativePollWindowEvent(100);
+                if (packed == 0)
+                    continue;
+                int type = (int)(packed >>> 32);
+                int windowId = (int)(packed & 0xffffffffL);
+                runOnUiThread(() -> handleWindowEvent(type, windowId));
+            }
+        }, "acglass-window-events");
+        windowEventThread.start();
+    }
+
+    private void stopWindowEventThread() {
+        windowEventThreadRunning = false;
+        windowEventThread = null;
+    }
+
+    private void handleWindowEvent(int type, int windowId) {
+        if (closingFromBack)
+            return;
+
+        if (windowId != 0)
+            lastWindowId = windowId;
+
+        if (type == WINDOW_EVENT_CLOSED) {
+            closingFromBack = true;
+            finishAndRemoveTask();
+        } else if (type == WINDOW_EVENT_MINIMIZED) {
+            windowMinimizedByCompositor = true;
+            moveTaskToBack(true);
+        } else if (type == WINDOW_EVENT_RESTORED || type == WINDOW_EVENT_OPENED) {
+            windowMinimizedByCompositor = false;
+        }
+    }
+
+    private void requestRestoreLastWindow() {
+        int windowId = lastWindowId;
+        if (windowId == 0)
+            return;
+
+        new Thread(() -> {
+            for (int i = 0; i < 12 && windowMinimizedByCompositor; i++) {
+                SystemClock.sleep(i == 0 ? 120 : 250);
+                if (nativeSendWindowCommand(WINDOW_COMMAND_RESTORE, windowId))
+                    return;
+            }
+        }, "acglass-window-restore").start();
     }
 
     private boolean hasLaunchToken() {

@@ -24,6 +24,8 @@ The current design is:
 - The Linux side starts a shared Weston session with the Anland backend on
   demand, launches the requested GUI app inside that session, reuses the same
   session for later apps, and stops Weston after the last tracked GUI app exits.
+- Weston forwards top-level window open, close, minimize, and restore events to
+  the Android display task through the ACGlass compositor window-event channel.
 
 ## Repository Layout
 
@@ -225,18 +227,22 @@ Android-launched container commands enter through `/opt/acglass/shell_command.sh
 which avoids Droidspaces argument loss around `bash -lc` for non-root users.
 In the Android display task, pressing Back twice closes the current Linux app
 and removes that display task from Android recents. Pressing Home leaves the
-task in recents and keeps the Linux app running.
-When the launched Linux app process exits on its own, ACGlass also removes the
-matching Android display task.
+task in recents and keeps the Linux app running. When a Linux GUI window asks
+Weston to minimize, ACGlass backgrounds the matching Android display task; when
+the task is opened again from Android recents, ACGlass asks Weston to restore
+that window. When the Linux GUI window closes, ACGlass removes the matching
+Android display task.
 
 ## Current Limitations
 
 - Automatic app scanning currently targets Debian/Ubuntu `.desktop` locations.
 - Only running Droidspaces containers are auto-discovered.
-- App lifetime tracking is process-based. Applications that daemonize into a
-  different process group may require tuning `ACGLASS_IDLE_GRACE_SECONDS`.
-- Weston window minimize events are not yet forwarded to Android; Home already
-  backgrounds the Android display task without stopping the Linux process.
+- Weston session idle shutdown still uses tracked launch processes. Applications
+  that daemonize into a different process group may require tuning
+  `ACGLASS_IDLE_GRACE_SECONDS`.
+- ACGlass does not yet provide an appindicator/system-tray host in Weston. This
+  is planned for a later appindicator bridge; for now, Android task lifetime is
+  driven by compositor window close/minimize events rather than tray presence.
 
 ## License
 

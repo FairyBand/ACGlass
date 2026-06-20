@@ -281,6 +281,61 @@ int push_input_event(display_ctx *ctx, const struct InputEvent *event)
     return 0;
 }
 
+int poll_window_event(display_ctx *ctx, struct WindowEvent *event, int timeout_ms)
+{
+    if (ctx->fallback)
+        return 0;
+
+    struct pollfd pfd = { .fd = ctx->data_fd, .events = POLLIN };
+    int ret = poll(&pfd, 1, timeout_ms);
+    if (ret <= 0)
+        return 0;
+
+    if (pfd.revents & (POLLHUP | POLLERR)) {
+        enter_fallback(ctx);
+        return -1;
+    }
+
+    uint8_t msg_buf[sizeof(struct data_msg) + sizeof(struct WindowEvent)];
+    ssize_t n = recv(ctx->data_fd, msg_buf, sizeof(struct data_msg), MSG_PEEK);
+    if (n < (ssize_t)sizeof(struct data_msg))
+        return 0;
+
+    struct data_msg hdr;
+    memcpy(&hdr, msg_buf, sizeof(hdr));
+    if (hdr.type != DATA_MSG_WINDOW_EVENT)
+        return 0;
+    if (hdr.size != sizeof(struct WindowEvent)) {
+        enter_fallback(ctx);
+        return -1;
+    }
+
+    if (recv_all(ctx->data_fd, msg_buf, sizeof(struct data_msg) + sizeof(struct WindowEvent)) < 0) {
+        enter_fallback(ctx);
+        return -1;
+    }
+
+    memcpy(event, msg_buf + sizeof(struct data_msg), sizeof(*event));
+    return 1;
+}
+
+int push_window_command(display_ctx *ctx, const struct WindowCommand *command)
+{
+    if (ctx->fallback)
+        return 0;
+
+    struct data_msg hdr = { .type = DATA_MSG_WINDOW_COMMAND, .size = sizeof(struct WindowCommand) };
+    uint8_t msg[sizeof(struct data_msg) + sizeof(struct WindowCommand)];
+    memcpy(msg, &hdr, sizeof(hdr));
+    memcpy(msg + sizeof(hdr), command, sizeof(*command));
+
+    if (send_all(ctx->data_fd, msg, sizeof(msg)) < 0) {
+        enter_fallback(ctx);
+        return -1;
+    }
+    return 1;
+}
+
 int set_fallback_callback(display_ctx *ctx, void (*on_fallback)(void *), void *userdata)
 {
     ctx->fallback_cb = on_fallback;

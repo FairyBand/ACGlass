@@ -14,6 +14,8 @@ int  push_dmabufs(display_ctx *ctx, const int *fds, const struct buf_info *infos
 int  select_dmabuf(display_ctx *ctx, int idx);
 int  refresh_done(display_ctx *ctx);
 int  push_input_event(display_ctx *ctx, const struct InputEvent *event);
+int  poll_window_event(display_ctx *ctx, struct WindowEvent *event, int timeout_ms);
+int  push_window_command(display_ctx *ctx, const struct WindowCommand *command);
 int  set_fallback_callback(display_ctx *ctx, void (*on_fallback)(void *), void *userdata);
 
 #endif

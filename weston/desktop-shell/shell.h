@@ -88,6 +88,7 @@ struct shell_surface {
 
 	struct weston_desktop_surface *desktop_surface;
 	struct weston_view *view;
+	uint32_t acglass_window_id;
 	struct weston_surface *wsurface_anim_fade;
 	struct weston_view *wview_anim_fade;
 	int32_t last_width, last_height;
@@ -323,6 +324,7 @@ struct desktop_shell {
 	struct wl_list output_list;
 	struct wl_list seat_list;
 	struct wl_list shsurf_list;
+	uint32_t acglass_next_window_id;
 
 	enum weston_desktop_shell_panel_position panel_position;
 
