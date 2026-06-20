@@ -1,14 +1,21 @@
 package com.acglass.app;
 
 import android.content.Context;
+import android.util.Base64;
 import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 
 final class RootDroidspaces {
     private static final String TAG = "ACGlass";
+    private static final Set<String> STOP_REQUESTED =
+        Collections.synchronizedSet(new HashSet<>());
 
     private RootDroidspaces() {
     }
@@ -38,7 +45,9 @@ final class RootDroidspaces {
 
         for (String container : parseContainers(containersOutput)) {
             Log.i(TAG, "scanning container: " + container);
-            String apps = scanContainerApps(context, container);
+            String user = detectContainerUser(context, container);
+            Log.i(TAG, "container " + container + " user: " + user);
+            String apps = scanContainerApps(context, container, user);
             if (!firstContainer)
                 appsJson.append(',');
             firstContainer = false;
@@ -53,7 +62,8 @@ final class RootDroidspaces {
         return appsJson.toString();
     }
 
-    private static String scanContainerApps(Context context, String container)
+    private static String scanContainerApps(Context context, String container,
+                                           String user)
         throws IOException, InterruptedException {
         String script =
             "python3 - <<'PY'\n" +
@@ -91,20 +101,72 @@ final class RootDroidspaces {
             "        apps.append({'name': app_name, 'command': cmd})\n" +
             "print(json.dumps(apps, ensure_ascii=False))\n" +
             "PY";
-        return runInContainer(context, container, script).trim();
+        return runInContainer(context, container, user, script).trim();
     }
 
-    static void launchApp(Context context, String container, String command)
+    static void launchApp(Context context, String container, String command,
+                          String appId)
         throws IOException, InterruptedException {
         String socket = ACGlassPrefs.getContainerSocketPath(context);
-        runInContainer(context, container,
+        String user = detectContainerUser(context, container);
+        Log.i(TAG, "launching in " + container + " as " + user + ": " +
+            command);
+        runInContainer(context, container, user,
             "ACGLASS_SOCKET=" + shellQuote(socket) + " " +
+            "ACGLASS_APP_ID=" + shellQuote(appId) + " " +
             "ACGLASS_START_ANDROID=0 ACGLASS_START_DAEMON=0 " +
-            "acglass-run -- " + command);
+            "acglass-run -- bash -lc " + shellQuote(command));
+    }
+
+    static void stopApp(Context context, String container, String appId)
+        throws IOException, InterruptedException {
+        if (container == null || container.trim().isEmpty() ||
+            appId == null || appId.trim().isEmpty())
+            return;
+
+        markStopRequested(appId);
+        String user = detectContainerUser(context, container);
+        Log.i(TAG, "stopping in " + container + " as " + user + ": " +
+            appId);
+        runInContainer(context, container, user,
+            "/opt/acglass/stop_app.sh " + shellQuote(appId.trim()));
+    }
+
+    static boolean consumeStopRequested(String appId) {
+        if (appId == null)
+            return false;
+        synchronized (STOP_REQUESTED) {
+            return STOP_REQUESTED.remove(appId);
+        }
+    }
+
+    private static void markStopRequested(String appId) {
+        synchronized (STOP_REQUESTED) {
+            STOP_REQUESTED.add(appId.trim());
+        }
+    }
+
+    private static String detectContainerUser(Context context, String container)
+        throws IOException, InterruptedException {
+        String script =
+            "awk -F: '$3 >= 1000 && $3 < 60000 && " +
+            "$7 !~ /(nologin|false)$/ && $6 != \"/nonexistent\" " +
+            "{ print $1; exit }' /etc/passwd";
+        String user = runInContainer(context, container, "", script).trim();
+        int newline = user.indexOf('\n');
+        if (newline >= 0)
+            user = user.substring(0, newline).trim();
+        return user.isEmpty() ? "root" : user;
     }
 
     private static String runInContainer(Context context, String container,
                                         String command)
+        throws IOException, InterruptedException {
+        return runInContainer(context, container, "", command);
+    }
+
+    private static String runInContainer(Context context, String container,
+                                        String user, String command)
         throws IOException, InterruptedException {
         String droidspaces = ACGlassPrefs.getDroidspacesPath(context);
         if (container.isEmpty())
@@ -112,7 +174,15 @@ final class RootDroidspaces {
         StringBuilder droidspacesCommand = new StringBuilder();
         droidspacesCommand.append(shellQuote(droidspaces));
         droidspacesCommand.append(" --name=").append(shellQuote(container));
-        droidspacesCommand.append(" run bash -lc ").append(shellQuote(command));
+        if (user != null && !user.trim().isEmpty() &&
+            !"root".equals(user.trim())) {
+            droidspacesCommand.append(" --user=").append(shellQuote(user.trim()));
+        }
+        String encodedCommand = Base64.encodeToString(
+            command.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+        droidspacesCommand.append(
+            " run /usr/bin/env /opt/acglass/shell_command.sh ");
+        droidspacesCommand.append(shellQuote(encodedCommand));
 
         return runRootCommand(droidspacesCommand.toString());
     }

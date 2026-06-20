@@ -21,8 +21,9 @@ The current design is:
 - Debian/Ubuntu `.desktop` entries are scanned inside each running container.
 - Selecting an app opens a separate Android display task and starts the Linux
   command through Droidspaces.
-- The Linux side starts a minimal Weston session with the Anland backend and
-  `kiosk-shell`, then runs only the requested GUI app.
+- The Linux side starts a shared Weston session with the Anland backend on
+  demand, launches the requested GUI app inside that session, reuses the same
+  session for later apps, and stops Weston after the last tracked GUI app exits.
 
 ## Repository Layout
 
@@ -200,6 +201,9 @@ ACGLASS_AM_CMD=am
 ACGLASS_ACTIVITY=com.acglass.app/.DisplayActivity
 ACGLASS_START_DAEMON=0
 ACGLASS_START_ANDROID=0
+ACGLASS_SESSION_DIR=/tmp/acglass-runtime-1000/acglass-session
+ACGLASS_WAYLAND_DISPLAY=wayland-acglass
+ACGLASS_IDLE_GRACE_SECONDS=2
 ```
 
 `ACGLASS_START_DAEMON` and `ACGLASS_START_ANDROID` default to `0` because the
@@ -209,12 +213,30 @@ from an Android shell where the daemon binary and `am` command are available.
 
 The lower-level Weston display backend is still named `anland` internally.
 
+`acglass-run` manages one shared Weston session per `ACGLASS_SESSION_DIR`.
+The first launched GUI app starts the session, later apps reuse the same
+`WAYLAND_DISPLAY`/`DISPLAY` environment, and the session is stopped after the
+last tracked app exits. Weston logs are written to
+`$ACGLASS_SESSION_DIR/weston.log`.
+When launched from Android, ACGlass automatically selects the first normal
+container user with UID 1000-59999 and falls back to root only if no such user
+exists.
+Android-launched container commands enter through `/opt/acglass/shell_command.sh`,
+which avoids Droidspaces argument loss around `bash -lc` for non-root users.
+In the Android display task, pressing Back twice closes the current Linux app
+and removes that display task from Android recents. Pressing Home leaves the
+task in recents and keeps the Linux app running.
+When the launched Linux app process exits on its own, ACGlass also removes the
+matching Android display task.
+
 ## Current Limitations
 
 - Automatic app scanning currently targets Debian/Ubuntu `.desktop` locations.
 - Only running Droidspaces containers are auto-discovered.
-- Multiple independent GUI windows are planned, but the native Android consumer
-  still needs per-window state isolation for robust multi-window operation.
+- App lifetime tracking is process-based. Applications that daemonize into a
+  different process group may require tuning `ACGLASS_IDLE_GRACE_SECONDS`.
+- Weston window minimize events are not yet forwarded to Android; Home already
+  backgrounds the Android display task without stopping the Linux process.
 
 ## License
 

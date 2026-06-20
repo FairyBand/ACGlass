@@ -177,10 +177,21 @@ if [ ! -S "$SOCK" ]; then
 fi
 
 export LD_LIBRARY_PATH="@LIBDIR@:@LIBDIR@/libweston-16:@LIBDIR@/weston:$LD_LIBRARY_PATH"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-mkdir -p "$XDG_RUNTIME_DIR"
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    DEFAULT_RUNTIME_DIR="/run/user/$(id -u)"
+    if mkdir -p "$DEFAULT_RUNTIME_DIR" 2>/dev/null; then
+        XDG_RUNTIME_DIR="$DEFAULT_RUNTIME_DIR"
+    else
+        XDG_RUNTIME_DIR="/tmp/acglass-runtime-$(id -u)"
+    fi
+fi
+if ! mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; then
+    XDG_RUNTIME_DIR="/tmp/acglass-runtime-$(id -u)"
+    mkdir -p "$XDG_RUNTIME_DIR"
+fi
 chmod 0700 "$XDG_RUNTIME_DIR"
-export WESTON_MODULE_MAP="anland-backend.so=@LIBDIR@/libweston-16/anland-backend.so;gl-renderer.so=@LIBDIR@/libweston-16/gl-renderer.so;vulkan-renderer.so=@LIBDIR@/libweston-16/vulkan-renderer.so;xwayland.so=@LIBDIR@/libweston-16/xwayland.so;kiosk-shell.so=@LIBDIR@/weston/kiosk-shell.so"
+export XDG_RUNTIME_DIR
+export WESTON_MODULE_MAP="anland-backend.so=@LIBDIR@/libweston-16/anland-backend.so;gl-renderer.so=@LIBDIR@/libweston-16/gl-renderer.so;vulkan-renderer.so=@LIBDIR@/libweston-16/vulkan-renderer.so;xwayland.so=@LIBDIR@/libweston-16/xwayland.so;desktop-shell.so=@LIBDIR@/weston/desktop-shell.so;kiosk-shell.so=@LIBDIR@/weston/kiosk-shell.so"
 unset DISPLAY
 
 # Native freedreno GL on the kgsl GPU node. The gallium driver is registered
@@ -193,53 +204,372 @@ export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE_DRI3="${MESA_VK_DEVICE_SELECT_
 
 WESTON_PID=
 APP_PID=
+APP_PGID=
+APP_DONE=0
+APP_MARKER=
+APP_ID="${ACGLASS_APP_ID:-}"
+APP_ID_FILE=
+APP_LOG=
+LOCK_HELD=0
+SESSION_DIR="${ACGLASS_SESSION_DIR:-$XDG_RUNTIME_DIR/acglass-session}"
+LOCK_DIR="$SESSION_DIR/lock"
+APPS_DIR="$SESSION_DIR/apps"
+APP_IDS_DIR="$APPS_DIR/by-id"
+PID_FILE="$SESSION_DIR/weston.pid"
+ENV_FILE="$SESSION_DIR/env"
+LOG_FILE="$SESSION_DIR/weston.log"
+WESTON_SOCKET="${ACGLASS_WAYLAND_DISPLAY:-wayland-acglass}"
+WESTON_ARGS="${ACGLASS_WESTON_ARGS:---xwayland --no-config}"
+IDLE_GRACE_SECONDS="${ACGLASS_IDLE_GRACE_SECONDS:-2}"
+
+lock_session() {
+    mkdir -p "$SESSION_DIR"
+    while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        lock_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+        if [ -z "$lock_pid" ]; then
+            rmdir "$LOCK_DIR" 2>/dev/null || true
+            continue
+        fi
+        if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+            rm -f "$LOCK_DIR/pid" 2>/dev/null || true
+            rmdir "$LOCK_DIR" 2>/dev/null || true
+            continue
+        fi
+        sleep 0.05
+    done
+    echo "$$" > "$LOCK_DIR/pid"
+    LOCK_HELD=1
+}
+
+unlock_session() {
+    LOCK_HELD=0
+    rm -f "$LOCK_DIR/pid" 2>/dev/null || true
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
+weston_is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    WESTON_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+    [ -n "$WESTON_PID" ] && kill -0 "$WESTON_PID" 2>/dev/null
+}
+
+prune_app_markers() {
+    mkdir -p "$APPS_DIR"
+    for marker in "$APPS_DIR"/*; do
+        [ -e "$marker" ] || continue
+        [ -f "$marker" ] || continue
+        case "$marker" in
+            *.log) continue ;;
+        esac
+        pid="$(basename "$marker")"
+        case "$pid" in
+            *[!0-9]*|'') rm -f "$marker"; continue ;;
+        esac
+        pgid="$(sed -n 's/^pgid=//p' "$marker" 2>/dev/null | head -n 1)"
+        if kill -0 "$pid" 2>/dev/null; then
+            continue
+        fi
+        if [ -n "$pgid" ] && kill -0 -- "-$pgid" 2>/dev/null; then
+            continue
+        fi
+        rm -f "$marker"
+    done
+}
+
+has_active_apps() {
+    prune_app_markers
+    for marker in "$APPS_DIR"/*; do
+        [ -e "$marker" ] && return 0
+    done
+    return 1
+}
+
+write_session_env() {
+    {
+        printf 'export XDG_RUNTIME_DIR=%q\n' "$XDG_RUNTIME_DIR"
+        printf 'export WAYLAND_DISPLAY=%q\n' "$WAYLAND_DISPLAY"
+        [ -n "${DISPLAY:-}" ] && printf 'export DISPLAY=%q\n' "$DISPLAY"
+        printf 'export LD_LIBRARY_PATH=%q\n' "$LD_LIBRARY_PATH"
+        printf 'export WESTON_MODULE_MAP=%q\n' "$WESTON_MODULE_MAP"
+        printf 'export MESA_LOADER_DRIVER_OVERRIDE=%q\n' "$MESA_LOADER_DRIVER_OVERRIDE"
+        printf 'export GALLIUM_DRIVER=%q\n' "$GALLIUM_DRIVER"
+        printf 'export FD_FORCE_KGSL=%q\n' "$FD_FORCE_KGSL"
+        printf 'export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE=%q\n' "$MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE"
+        printf 'export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE_DRI3=%q\n' "$MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE_DRI3"
+        printf 'export QT_QPA_PLATFORM=%q\n' "${QT_QPA_PLATFORM:-wayland}"
+        printf 'export SDL_VIDEODRIVER=%q\n' "${SDL_VIDEODRIVER:-wayland}"
+        printf 'export GDK_BACKEND=%q\n' "${GDK_BACKEND:-wayland,x11}"
+    } > "$ENV_FILE"
+}
+
+load_session_env() {
+    if [ -f "$ENV_FILE" ]; then
+        # shellcheck disable=SC1090
+        . "$ENV_FILE"
+    fi
+}
+
+detect_x_display() {
+    [ -d /tmp/.X11-unix ] || return 1
+    before_file="$SESSION_DIR/x-sockets.before"
+    for i in $(seq 1 80); do
+        for socket in /tmp/.X11-unix/X*; do
+            [ -S "$socket" ] || continue
+            grep -Fxq "$socket" "$before_file" 2>/dev/null && continue
+            num="${socket##*/X}"
+            [ -n "$num" ] || continue
+            DISPLAY=":$num"
+            export DISPLAY
+            return 0
+        done
+        sleep 0.1
+    done
+    return 1
+}
+
+start_weston_session() {
+    mkdir -p "$APPS_DIR"
+    prune_app_markers
+    if weston_is_running && [ -S "$XDG_RUNTIME_DIR/$WESTON_SOCKET" ]; then
+        load_session_env
+        return 0
+    fi
+
+    old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    [ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null || true
+    rm -f "$PID_FILE" "$ENV_FILE" "$XDG_RUNTIME_DIR/$WESTON_SOCKET" "$XDG_RUNTIME_DIR/$WESTON_SOCKET.lock" 2>/dev/null
+    mkdir -p "$(dirname "$LOG_FILE")"
+
+    if [ -d /tmp/.X11-unix ]; then
+        find /tmp/.X11-unix -maxdepth 1 -type s -name 'X*' 2>/dev/null | sort > "$SESSION_DIR/x-sockets.before"
+    else
+        : > "$SESSION_DIR/x-sockets.before"
+    fi
+
+    if command -v setsid >/dev/null 2>&1; then
+        setsid @PREFIX@/bin/weston -Banland-backend.so --disp-sock="$SOCK" --socket="$WESTON_SOCKET" $WESTON_ARGS >"$LOG_FILE" 2>&1 &
+    else
+        @PREFIX@/bin/weston -Banland-backend.so --disp-sock="$SOCK" --socket="$WESTON_SOCKET" $WESTON_ARGS >"$LOG_FILE" 2>&1 &
+    fi
+    WESTON_PID=$!
+    echo "$WESTON_PID" > "$PID_FILE"
+
+    for i in $(seq 1 160); do
+        sleep 0.25
+        if [ -S "${XDG_RUNTIME_DIR}/${WESTON_SOCKET}" ]; then
+            export WAYLAND_DISPLAY="$WESTON_SOCKET"
+            detect_x_display || true
+            write_session_env
+            return 0
+        fi
+        if ! kill -0 "$WESTON_PID" 2>/dev/null; then
+            echo "ERROR: weston exited while starting; see $LOG_FILE" >&2
+            rm -f "$PID_FILE"
+            return 1
+        fi
+    done
+
+    echo "ERROR: weston wayland socket not found; see $LOG_FILE" >&2
+    kill "$WESTON_PID" 2>/dev/null || true
+    sleep 0.3
+    kill -9 "$WESTON_PID" 2>/dev/null || true
+    rm -f "$PID_FILE"
+    return 1
+}
+
+stop_weston_session_if_idle() {
+    if [ "$LOCK_HELD" != "1" ]; then
+        lock_session
+        locked_here=1
+    else
+        locked_here=0
+    fi
+    sleep "$IDLE_GRACE_SECONDS"
+    if ! has_active_apps; then
+        if weston_is_running; then
+            kill "$WESTON_PID" 2>/dev/null || true
+            for i in $(seq 1 20); do
+                kill -0 "$WESTON_PID" 2>/dev/null || break
+                sleep 0.1
+            done
+            kill -9 "$WESTON_PID" 2>/dev/null || true
+        fi
+        rm -f "$PID_FILE" "$ENV_FILE" "$XDG_RUNTIME_DIR/$WESTON_SOCKET" "$XDG_RUNTIME_DIR/$WESTON_SOCKET.lock" 2>/dev/null
+    fi
+    [ "$locked_here" = "1" ] && unlock_session
+}
+
+kill_app() {
+    if [ -n "$APP_PGID" ]; then
+        kill -- "-$APP_PGID" 2>/dev/null || true
+        sleep 0.2
+        kill -9 -- "-$APP_PGID" 2>/dev/null || true
+        return
+    fi
+    [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+}
+
+wait_for_app_group() {
+    [ -n "$APP_PGID" ] || return 0
+    command -v pgrep >/dev/null 2>&1 || return 0
+    while pgrep -g "$APP_PGID" >/dev/null 2>&1; do
+        sleep 0.5
+    done
+}
 
 cleanup() {
-    [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null
-    [ -n "$WESTON_PID" ] && kill "$WESTON_PID" 2>/dev/null
-    sleep 0.3
-    [ -n "$APP_PID" ] && kill -9 "$APP_PID" 2>/dev/null
-    [ -n "$WESTON_PID" ] && kill -9 "$WESTON_PID" 2>/dev/null
-    wait 2>/dev/null
+    if [ "$APP_DONE" != "1" ] && [ -n "$APP_PID" ]; then
+        kill_app
+        wait "$APP_PID" 2>/dev/null || true
+    fi
+    if [ -n "$APP_MARKER" ]; then
+        rm -f "$APP_MARKER"
+        [ -n "$APP_ID_FILE" ] && rm -f "$APP_ID_FILE"
+        stop_weston_session_if_idle
+    fi
+    [ "$LOCK_HELD" = "1" ] && unlock_session
 }
 trap cleanup EXIT INT TERM
 
-rm -f "${XDG_RUNTIME_DIR}"/wayland-acglass-app "${XDG_RUNTIME_DIR}"/wayland-acglass-app.lock 2>/dev/null
-
-@PREFIX@/bin/weston -Banland-backend.so --disp-sock="$SOCK" --shell=kiosk-shell.so --socket=wayland-acglass-app --no-config &
-WESTON_PID=$!
-
-WESTON_SOCKET="wayland-acglass-app"
-for i in $(seq 1 160); do
-    sleep 0.25
-    [ -S "${XDG_RUNTIME_DIR}/${WESTON_SOCKET}" ] && break
-done
-
-if [ ! -S "${XDG_RUNTIME_DIR}/${WESTON_SOCKET}" ]; then
-    echo "ERROR: weston wayland socket not found"
-    wait "$WESTON_PID"
+lock_session
+if ! start_weston_session; then
+    unlock_session
     exit 1
 fi
-
-export WAYLAND_DISPLAY="$WESTON_SOCKET"
+load_session_env
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
 export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland}"
 export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"
 
-"$@" &
+APP_LOG="$APPS_DIR/launch-$(date +%Y%m%d-%H%M%S)-$$.log"
+case "$APP_ID" in
+    *[!A-Za-z0-9_.:-]*)
+        APP_ID=
+        ;;
+esac
+if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >"$APP_LOG" 2>&1 &
+    APP_PGID=$!
+else
+    "$@" >"$APP_LOG" 2>&1 &
+fi
 APP_PID=$!
+APP_MARKER="$APPS_DIR/$APP_PID"
+{
+    printf 'pgid=%s\n' "${APP_PGID:-$APP_PID}"
+    printf 'command=%s\n' "$*"
+    printf 'log=%s\n' "$APP_LOG"
+} > "$APP_MARKER"
+if [ -n "$APP_ID" ]; then
+    mkdir -p "$APP_IDS_DIR"
+    APP_ID_FILE="$APP_IDS_DIR/$APP_ID"
+    printf '%s\n' "$APP_MARKER" > "$APP_ID_FILE"
+fi
+unlock_session
 
 wait "$APP_PID"
 APP_STATUS=$?
+wait_for_app_group
+{
+    printf '\n[acglass-run] command exited with status %s at %s\n' "$APP_STATUS" "$(date)"
+    printf '[acglass-run] command: %s\n' "$*"
+} >> "$APP_LOG"
+APP_DONE=1
+rm -f "$APP_MARKER"
+APP_MARKER=
+[ -n "$APP_ID_FILE" ] && rm -f "$APP_ID_FILE"
+APP_ID_FILE=
+stop_weston_session_if_idle
 exit "$APP_STATUS"
 EOF
 sed -i "s|@LIBDIR@|$LIBDIR|g; s|@PREFIX@|$PREFIX|g" "$PREFIX/start_app.sh"
 chmod +x "$PREFIX/start_app.sh"
 ln -sf "$PREFIX/start_app.sh" "$PREFIX/acglass-run"
 ln -sf "$PREFIX/start_app.sh" "$PREFIX/anland-run"
+cat > "$PREFIX/shell_command.sh" << 'EOF'
+#!/bin/sh
+set -eu
+
+if [ "$#" -lt 1 ]; then
+    echo "Usage: $0 <base64-command>" >&2
+    exit 2
+fi
+
+encoded="$1"
+if command -v base64 >/dev/null 2>&1; then
+    command_text="$(printf '%s' "$encoded" | base64 -d)"
+elif command -v python3 >/dev/null 2>&1; then
+    command_text="$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode(), end="")' "$encoded")"
+else
+    echo "ERROR: base64 decoder not found" >&2
+    exit 127
+fi
+
+exec /bin/bash -lc "$command_text"
+EOF
+chmod +x "$PREFIX/shell_command.sh"
+cat > "$PREFIX/stop_app.sh" << 'EOF'
+#!/bin/bash
+set -u
+
+APP_ID="${1:-${ACGLASS_APP_ID:-}}"
+if [ -z "$APP_ID" ]; then
+    echo "Usage: $0 <app-id>" >&2
+    exit 2
+fi
+
+case "$APP_ID" in
+    *[!A-Za-z0-9_.:-]*)
+        echo "ERROR: invalid app id" >&2
+        exit 2
+        ;;
+esac
+
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    if [ -d "/run/user/$(id -u)" ]; then
+        XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    else
+        XDG_RUNTIME_DIR="/tmp/acglass-runtime-$(id -u)"
+    fi
+fi
+
+SESSION_DIR="${ACGLASS_SESSION_DIR:-$XDG_RUNTIME_DIR/acglass-session}"
+ID_FILE="$SESSION_DIR/apps/by-id/$APP_ID"
+[ -f "$ID_FILE" ] || exit 0
+
+MARKER="$(cat "$ID_FILE" 2>/dev/null || true)"
+[ -f "$MARKER" ] || exit 0
+
+pgid="$(sed -n 's/^pgid=//p' "$MARKER" 2>/dev/null | head -n 1)"
+pid="$(basename "$MARKER")"
+
+case "$pgid" in
+    ''|*[!0-9]*)
+        pgid=
+        ;;
+esac
+case "$pid" in
+    ''|*[!0-9]*)
+        pid=
+        ;;
+esac
+
+if [ -n "$pgid" ]; then
+    kill -- "-$pgid" 2>/dev/null || true
+    sleep 0.5
+    kill -9 -- "-$pgid" 2>/dev/null || true
+elif [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    sleep 0.5
+    kill -9 "$pid" 2>/dev/null || true
+fi
+EOF
+chmod +x "$PREFIX/stop_app.sh"
+ln -sf "$PREFIX/stop_app.sh" "$PREFIX/acglass-stop"
 if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
     ln -sf "$PREFIX/start_app.sh" /usr/local/bin/acglass-run
     ln -sf "$PREFIX/start_app.sh" /usr/local/bin/anland-run
+    ln -sf "$PREFIX/stop_app.sh" /usr/local/bin/acglass-stop
 fi
 cat > "$PREFIX/acglass-wrap" << 'EOF'
 #!/bin/bash

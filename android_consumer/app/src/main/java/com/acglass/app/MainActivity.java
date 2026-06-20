@@ -3,6 +3,7 @@ package com.acglass.app;
 import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
@@ -18,6 +19,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 public class MainActivity extends Activity {
     private static final String TAG = "ACGlass";
@@ -31,6 +33,8 @@ public class MainActivity extends Activity {
         "\u91cd\u65b0\u68c0\u6d4b root \u6743\u9650";
     private static final String LAUNCH_FAILED =
         "Linux GUI \u5e94\u7528\u542f\u52a8\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u5bb9\u5668\u540e\u7aef\u914d\u7f6e";
+    private static final String WAYLAND_MONITOR_TITLE = "Wayland Monitor";
+    private static final long STARTUP_FAILURE_WINDOW_MS = 8000;
 
     private LinearLayout appList;
     private TextView statusText;
@@ -84,6 +88,13 @@ public class MainActivity extends Activity {
         scanButton.setText("Scan Linux Apps");
         scanButton.setOnClickListener(v -> scanApps());
         root.addView(scanButton, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button monitorButton = new Button(this);
+        monitorButton.setText("Open Wayland Monitor");
+        monitorButton.setOnClickListener(v -> openWaylandMonitor());
+        root.addView(monitorButton, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -184,6 +195,8 @@ public class MainActivity extends Activity {
     }
 
     private void launchApp(LinuxContainer container, LinuxApp app) {
+        String appId = "acglass-" + System.currentTimeMillis() + "-" +
+            UUID.randomUUID().toString();
         Intent intent = new Intent(this, DisplayActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT |
                         Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
@@ -192,18 +205,52 @@ public class MainActivity extends Activity {
         intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME,
                         container.name + ": " + app.name);
         intent.putExtra(ACGlassPrefs.EXTRA_APP_COMMAND, app.command);
+        intent.putExtra(ACGlassPrefs.EXTRA_CONTAINER_NAME, container.name);
+        intent.putExtra(ACGlassPrefs.EXTRA_APP_ID, appId);
         startActivity(intent);
 
         new Thread(() -> {
+            long launchStart = SystemClock.uptimeMillis();
             try {
-                RootDroidspaces.launchApp(this, container.name, app.command);
+                RootDroidspaces.launchApp(this, container.name, app.command,
+                                         appId);
             } catch (Exception e) {
-                Log.e(TAG, "failed to launch " + container.name + ": " +
-                    app.command, e);
-                runOnUiThread(() -> Toast.makeText(this,
-                    LAUNCH_FAILED, Toast.LENGTH_LONG).show());
+                boolean stopRequested =
+                    RootDroidspaces.consumeStopRequested(appId);
+                boolean earlyFailure = SystemClock.uptimeMillis() -
+                    launchStart < STARTUP_FAILURE_WINDOW_MS;
+                if (stopRequested) {
+                    Log.i(TAG, "Linux app stopped by user: " + appId);
+                } else {
+                    Log.e(TAG, "failed to launch " + container.name + ": " +
+                        app.command, e);
+                }
+                if (!stopRequested && earlyFailure) {
+                    runOnUiThread(() -> Toast.makeText(this,
+                        LAUNCH_FAILED, Toast.LENGTH_LONG).show());
+                }
+            } finally {
+                RootDroidspaces.consumeStopRequested(appId);
+                notifyAppFinished(appId);
             }
         }, "acglass-launch").start();
+    }
+
+    private void notifyAppFinished(String appId) {
+        Intent intent = new Intent(ACGlassPrefs.ACTION_APP_FINISHED);
+        intent.setPackage(getPackageName());
+        intent.putExtra(ACGlassPrefs.EXTRA_APP_ID, appId);
+        sendBroadcast(intent);
+    }
+
+    private void openWaylandMonitor() {
+        Intent intent = new Intent(this, DisplayActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT |
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        intent.putExtra(ACGlassPrefs.EXTRA_SOCKET,
+                        ACGlassPrefs.getAndroidSocketPath(this));
+        intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME, WAYLAND_MONITOR_TITLE);
+        startActivity(intent);
     }
 
     private void scanApps() {

@@ -323,6 +323,11 @@ static void *render_thread_func(void *arg)
             continue;
         }
 
+        if (!s->running) {
+            ANativeWindow_unlockAndPost(s->window);
+            break;
+        }
+
         ANativeWindow_unlockAndPost(s->window);
     }
 
@@ -372,6 +377,7 @@ Java_com_acglass_app_MainActivity_nativeStart(
 
     if (g_state.running) {
         g_state.running = false;
+        wake_display_consumer(g_state.ctx);
         pthread_mutex_unlock(&g_state.lock);
         pthread_join(g_state.render_thread, NULL);
         pthread_mutex_lock(&g_state.lock);
@@ -411,6 +417,7 @@ Java_com_acglass_app_MainActivity_nativeStop(
 
     if (g_state.running) {
         g_state.running = false;
+        wake_display_consumer(g_state.ctx);
         pthread_mutex_unlock(&g_state.lock);
         pthread_join(g_state.render_thread, NULL);
         pthread_mutex_lock(&g_state.lock);

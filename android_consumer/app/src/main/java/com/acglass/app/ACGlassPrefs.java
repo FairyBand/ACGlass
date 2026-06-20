@@ -9,8 +9,11 @@ final class ACGlassPrefs {
     static final String EXTRA_SOCKET = "com.acglass.app.SOCKET";
     static final String EXTRA_APP_NAME = "com.acglass.app.APP_NAME";
     static final String EXTRA_APP_COMMAND = "com.acglass.app.APP_COMMAND";
+    static final String EXTRA_CONTAINER_NAME = "com.acglass.app.CONTAINER_NAME";
+    static final String EXTRA_APP_ID = "com.acglass.app.APP_ID";
     static final String EXTRA_APPS_JSON = "com.acglass.app.APPS_JSON";
     static final String ACTION_SYNC_APPS = "com.acglass.app.SYNC_APPS";
+    static final String ACTION_APP_FINISHED = "com.acglass.app.APP_FINISHED";
 
     private static final String PREFS = "acglass";
     private static final String KEY_ANDROID_SOCKET = "socket_path";

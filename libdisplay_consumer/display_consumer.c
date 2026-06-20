@@ -189,6 +189,16 @@ void disconnect(display_ctx *ctx)
     free(ctx);
 }
 
+void wake_display_consumer(display_ctx *ctx)
+{
+    if (!ctx)
+        return;
+    if (ctx->refresh_done_efd >= 0)
+        eventfd_write(ctx->refresh_done_efd, 1);
+    if (ctx->buf_ready_efd >= 0)
+        eventfd_write(ctx->buf_ready_efd, 1);
+}
+
 int set_screen_info(display_ctx *ctx, uint32_t width, uint32_t height, uint32_t format, uint32_t refresh)
 {
     ctx->screen_w = width;

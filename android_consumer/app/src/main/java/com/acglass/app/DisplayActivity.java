@@ -1,8 +1,13 @@
 package com.acglass.app;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.InputDevice;
 import android.view.KeyEvent;
@@ -11,15 +16,30 @@ import android.view.PointerIcon;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.View;
 import android.view.WindowManager;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
+import android.widget.Toast;
 
 
 public class DisplayActivity extends Activity implements SurfaceHolder.Callback {
     private static final String TAG = "ACGlass";
+    private static final long BACK_EXIT_WINDOW_MS = 1600;
+    private static final String BACK_CLOSE_APP =
+        "\u518d\u6b21\u8fd4\u56de\u5173\u95ed\u5f53\u524d Linux \u5e94\u7528";
+    private static final String BACK_CLOSE_MONITOR =
+        "\u518d\u6b21\u8fd4\u56de\u5173\u95ed\u663e\u793a\u5668";
 
     private SurfaceView surfaceView;
     private boolean surfaceReady = false;
     private String socketPath;
+    private String containerName;
+    private String appId;
+    private long lastBackPressTime;
+    private boolean closingFromBack;
+    private OnBackInvokedCallback backInvokedCallback;
+    private BroadcastReceiver appFinishedReceiver;
 
     static {
         System.loadLibrary("acglass_consumer");
@@ -39,8 +59,11 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON |
+                             WindowManager.LayoutParams.FLAG_FULLSCREEN);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(
+            visibility -> hideSystemBars());
 
         surfaceView = new SurfaceView(this);
         setContentView(surfaceView);
@@ -48,7 +71,10 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
 
         socketPath = ACGlassPrefs.getAndroidSocketPath(this);
         updateSocketPath(getIntent());
+        setupAppFinishedReceiver();
         setupCursorHiding();
+        setupBackHandling();
+        hideSystemBars();
     }
 
     @Override
@@ -65,6 +91,47 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         surfaceView.setPointerIcon(PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL));
     }
 
+    private void setupBackHandling() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU)
+            return;
+        backInvokedCallback = this::handleBackPressed;
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT, backInvokedCallback);
+    }
+
+    private void setupAppFinishedReceiver() {
+        appFinishedReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String finishedAppId =
+                    intent.getStringExtra(ACGlassPrefs.EXTRA_APP_ID);
+                if (finishedAppId == null || !finishedAppId.equals(appId))
+                    return;
+                closingFromBack = true;
+                finishAndRemoveTask();
+            }
+        };
+
+        IntentFilter filter = new IntentFilter(ACGlassPrefs.ACTION_APP_FINISHED);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(appFinishedReceiver, filter,
+                             Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(appFinishedReceiver, filter);
+        }
+    }
+
+    private void hideSystemBars() {
+        View decor = getWindow().getDecorView();
+        decor.setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
+            View.SYSTEM_UI_FLAG_FULLSCREEN |
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
     private boolean updateSocketPath(Intent intent) {
         String nextSocketPath = ACGlassPrefs.getAndroidSocketPath(this);
         if (intent != null) {
@@ -75,6 +142,13 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
             String extraSocketPath = intent.getStringExtra(ACGlassPrefs.EXTRA_SOCKET);
             if (extraSocketPath != null && !extraSocketPath.isEmpty())
                 nextSocketPath = extraSocketPath;
+
+            String extraContainer =
+                intent.getStringExtra(ACGlassPrefs.EXTRA_CONTAINER_NAME);
+            containerName = extraContainer == null ? null : extraContainer;
+
+            String extraAppId = intent.getStringExtra(ACGlassPrefs.EXTRA_APP_ID);
+            appId = extraAppId == null ? null : extraAppId;
         }
         if (nextSocketPath == null || nextSocketPath.isEmpty())
             nextSocketPath = ACGlassPrefs.getAndroidSocketPath(this);
@@ -90,6 +164,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     @Override
     protected void onResume() {
         super.onResume();
+        hideSystemBars();
         nativeSetSocketPath(socketPath);
         if (surfaceReady) {
             nativeStop();
@@ -101,6 +176,72 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     protected void onPause() {
         super.onPause();
         nativeStop();
+    }
+
+    @Override
+    public void onBackPressed() {
+        handleBackPressed();
+    }
+
+    private void handleBackPressed() {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastBackPressTime > BACK_EXIT_WINDOW_MS) {
+            lastBackPressTime = now;
+            Toast.makeText(this, hasLaunchToken() ? BACK_CLOSE_APP :
+                           BACK_CLOSE_MONITOR, Toast.LENGTH_SHORT).show();
+            hideSystemBars();
+            return;
+        }
+
+        closeFromBack();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            backInvokedCallback != null) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(
+                backInvokedCallback);
+            backInvokedCallback = null;
+        }
+        if (appFinishedReceiver != null) {
+            unregisterReceiver(appFinishedReceiver);
+            appFinishedReceiver = null;
+        }
+        super.onDestroy();
+    }
+
+    private boolean hasLaunchToken() {
+        return containerName != null && !containerName.trim().isEmpty() &&
+            appId != null && !appId.trim().isEmpty();
+    }
+
+    private void closeFromBack() {
+        if (closingFromBack)
+            return;
+        closingFromBack = true;
+
+        if (hasLaunchToken()) {
+            String stopContainer = containerName;
+            String stopAppId = appId;
+            new Thread(() -> {
+                try {
+                    RootDroidspaces.stopApp(getApplicationContext(),
+                                            stopContainer, stopAppId);
+                } catch (Exception e) {
+                    Log.e(TAG, "failed to stop Linux app: " + stopAppId, e);
+                }
+            }, "acglass-stop").start();
+        }
+
+        finishAndRemoveTask();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus)
+            hideSystemBars();
     }
 
     @Override
@@ -159,6 +300,8 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK)
+            return super.onKeyDown(keyCode, event);
         if (event.getRepeatCount() > 0)
             return true;
         int scanCode = event.getScanCode();
@@ -171,6 +314,8 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK)
+            return super.onKeyUp(keyCode, event);
         int scanCode = event.getScanCode();
         if (scanCode != 0) {
             nativeSendKey(1, scanCode);
