@@ -74,6 +74,9 @@ static void
 shell_surface_update_child_surface_layers(struct shell_surface *shsurf);
 
 static void
+acglass_emit_window_event(struct shell_surface *shsurf, uint32_t type);
+
+static void
 get_maximized_size(struct shell_surface *shsurf, int32_t *width, int32_t *height);
 
 static bool
@@ -1637,6 +1640,7 @@ set_minimized(struct weston_surface *surface)
 	surface_keyboard_focus_lost(surface);
 
 	shell_surface_update_child_surface_layers(shsurf);
+	acglass_emit_window_event(shsurf, WESTON_ANLAND_WINDOW_EVENT_MINIMIZED);
 }
 
 
@@ -1908,6 +1912,10 @@ acglass_emit_window_event(struct shell_surface *shsurf, uint32_t type)
 			       pid > 0 ? (uint32_t)pid : 0,
 			       app_id,
 			       title);
+	weston_log("acglass: window event type=%u id=%u app_id=%s title=%s\n",
+		   type, shsurf->acglass_window_id,
+		   app_id ? app_id : "",
+		   title ? title : "");
 }
 
 static struct shell_surface *
@@ -2541,8 +2549,6 @@ desktop_surface_minimized_requested(struct weston_desktop_surface *desktop_surfa
 
 	 /* apply compositor's own minimization logic (hide) */
 	set_minimized(surface);
-	acglass_emit_window_event(weston_desktop_surface_get_user_data(desktop_surface),
-				  WESTON_ANLAND_WINDOW_EVENT_MINIMIZED);
 }
 
 static void

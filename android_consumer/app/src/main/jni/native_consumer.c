@@ -619,6 +619,8 @@ Java_com_acglass_app_DisplayActivity_nativePollWindowEvent(
     if (ret <= 0)
         return 0;
 
+    LOGI("window event type=%u id=%u app_id=%s title=%s",
+         event.type, event.window_id, event.app_id, event.title);
     return ((jlong)event.type << 32) | (jlong)event.window_id;
 }
 
@@ -640,5 +642,7 @@ Java_com_acglass_app_DisplayActivity_nativeSendWindowCommand(
     ret = push_window_command(g_state.ctx, &command);
     pthread_mutex_unlock(&g_state.lock);
 
+    LOGI("window command type=%u id=%u ret=%d",
+         command.type, command.window_id, ret);
     return ret > 0 ? JNI_TRUE : JNI_FALSE;
 }

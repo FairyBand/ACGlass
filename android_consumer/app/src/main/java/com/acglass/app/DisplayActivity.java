@@ -46,6 +46,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     private volatile boolean windowEventThreadRunning;
     private volatile boolean windowMinimizedByCompositor;
     private volatile int lastWindowId;
+    private volatile int displayGeneration;
     private Thread windowEventThread;
     private OnBackInvokedCallback backInvokedCallback;
     private BroadcastReceiver appFinishedReceiver;
@@ -94,8 +95,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         super.onNewIntent(intent);
         setIntent(intent);
         if (updateSocketPath(intent) && surfaceReady) {
-            nativeStop();
-            nativeStart(surfaceView.getHolder().getSurface());
+            restartDisplay(surfaceView.getHolder().getSurface());
         }
     }
 
@@ -179,8 +179,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         hideSystemBars();
         nativeSetSocketPath(socketPath);
         if (surfaceReady) {
-            nativeStop();
-            nativeStart(surfaceView.getHolder().getSurface());
+            startDisplay(surfaceView.getHolder().getSurface());
             if (windowMinimizedByCompositor)
                 requestRestoreLastWindow();
         }
@@ -189,7 +188,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     @Override
     protected void onPause() {
         super.onPause();
-        nativeStop();
+        stopDisplayAsync();
     }
 
     @Override
@@ -232,7 +231,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         windowEventThreadRunning = true;
         windowEventThread = new Thread(() -> {
             while (windowEventThreadRunning) {
-                long packed = nativePollWindowEvent(100);
+                long packed = nativePollWindowEvent(20);
                 if (packed == 0)
                     continue;
                 int type = (int)(packed >>> 32);
@@ -249,6 +248,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     }
 
     private void handleWindowEvent(int type, int windowId) {
+        Log.i(TAG, "window event type=" + type + " id=" + windowId);
         if (closingFromBack)
             return;
 
@@ -274,6 +274,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         new Thread(() -> {
             for (int i = 0; i < 12 && windowMinimizedByCompositor; i++) {
                 SystemClock.sleep(i == 0 ? 120 : 250);
+                Log.i(TAG, "requesting window restore id=" + windowId);
                 if (nativeSendWindowCommand(WINDOW_COMMAND_RESTORE, windowId))
                     return;
             }
@@ -321,14 +322,46 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         Log.i(TAG, "surfaceChanged: " + width + "x" + height);
         surfaceReady = true;
-        nativeStop();
-        nativeStart(holder.getSurface());
+        restartDisplay(holder.getSurface());
     }
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         surfaceReady = false;
-        nativeStop();
+        stopDisplayAsync();
+    }
+
+    private void startDisplay(Surface surface) {
+        int generation = ++displayGeneration;
+        new Thread(() -> {
+            if (generation == displayGeneration) {
+                nativeStart(surface);
+                Log.i(TAG, "display started generation=" + generation);
+            }
+        }, "acglass-display-start").start();
+    }
+
+    private void restartDisplay(Surface surface) {
+        int generation = ++displayGeneration;
+        new Thread(() -> {
+            if (generation != displayGeneration)
+                return;
+            nativeStop();
+            if (generation == displayGeneration) {
+                nativeStart(surface);
+                Log.i(TAG, "display restarted generation=" + generation);
+            }
+        }, "acglass-display-restart").start();
+    }
+
+    private void stopDisplayAsync() {
+        int generation = ++displayGeneration;
+        new Thread(() -> {
+            if (generation == displayGeneration) {
+                nativeStop();
+                Log.i(TAG, "display stopped generation=" + generation);
+            }
+        }, "acglass-display-stop").start();
     }
 
     @Override
