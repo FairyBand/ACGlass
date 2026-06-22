@@ -49,6 +49,8 @@ struct kiosk_shell {
 	const struct weston_xwayland_surface_api *xwayland_surface_api;
 	struct weston_config *config;
 	struct wl_listener session_listener;
+
+	uint32_t acglass_next_window_id;
 };
 
 struct kiosk_shell_surface {
@@ -82,6 +84,8 @@ struct kiosk_shell_surface {
 	bool appid_output_assigned;
 
 	struct wl_listener surface_label_update;
+
+	uint32_t acglass_window_id;
 };
 
 struct kiosk_shell_seat {

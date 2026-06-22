@@ -251,15 +251,39 @@ int refresh_done(display_ctx *ctx)
     if (!ctx->buffer_pending)
         return 0;
 
-    struct pollfd pfd = { .fd = ctx->refresh_done_efd, .events = POLLIN };
-    int ret = poll(&pfd, 1, 5000);
-    if (ret <= 0) {
-        enter_fallback(ctx);
-        return -1;
+    struct pollfd pfd[2] = {
+        { .fd = ctx->refresh_done_efd, .events = POLLIN },
+        { .fd = ctx->data_fd,          .events = 0 },
+    };
+
+    while (1) {
+        int ret = poll(pfd, 2, 5000);
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+            enter_fallback(ctx);
+            return -1;
+        }
+        if (ret == 0)
+            continue;
+
+        if (pfd[0].revents & (POLLERR | POLLNVAL)) {
+            enter_fallback(ctx);
+            return -1;
+        }
+        if (pfd[1].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+            enter_fallback(ctx);
+            return -1;
+        }
+        if (pfd[0].revents & POLLIN)
+            break;
     }
 
     eventfd_t val;
-    eventfd_read(ctx->refresh_done_efd, &val);
+    if (eventfd_read(ctx->refresh_done_efd, &val) < 0) {
+        enter_fallback(ctx);
+        return -1;
+    }
     ctx->buffer_pending = false;
     return 0;
 }

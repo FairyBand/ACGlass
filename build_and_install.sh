@@ -83,7 +83,7 @@ SOCK="\${1:-/run/display.sock}"
 
 export LD_LIBRARY_PATH="$LIBDIR:$LIBDIR/libweston-16:$LIBDIR/weston:\$LD_LIBRARY_PATH"
 export XDG_RUNTIME_DIR="\${XDG_RUNTIME_DIR:-/tmp}"
-export WESTON_MODULE_MAP="anland-backend.so=$LIBDIR/libweston-16/anland-backend.so;gl-renderer.so=$LIBDIR/libweston-16/gl-renderer.so;vulkan-renderer.so=$LIBDIR/libweston-16/vulkan-renderer.so;desktop-shell.so=$LIBDIR/weston/desktop-shell.so;xwayland.so=$LIBDIR/libweston-16/xwayland.so"
+export WESTON_MODULE_MAP="anland-backend.so=$LIBDIR/libweston-16/anland-backend.so;gl-renderer.so=$LIBDIR/libweston-16/gl-renderer.so;vulkan-renderer.so=$LIBDIR/libweston-16/vulkan-renderer.so;desktop-shell.so=$LIBDIR/weston/desktop-shell.so;kiosk-shell.so=$LIBDIR/weston/kiosk-shell.so;xwayland.so=$LIBDIR/libweston-16/xwayland.so"
 
 # Native freedreno GL on the kgsl GPU node (loader name "kgsl"). GALLIUM_DRIVER
 # is set so EGL does NOT silently fall back to zink if freedreno init fails
@@ -99,7 +99,7 @@ export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE=1
 export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE_DRI3=1
 
 shift 2>/dev/null || true
-exec $PREFIX/bin/weston -Banland-backend.so --disp-sock="\$SOCK" --xwayland "\$@"
+exec $PREFIX/bin/weston -Banland-backend.so --disp-sock="\$SOCK" --xwayland --idle-time=0 --shell=kiosk-shell.so "\$@"
 EOF
 chmod +x "$PREFIX/start.sh"
 
@@ -178,12 +178,17 @@ fi
 
 export LD_LIBRARY_PATH="@LIBDIR@:@LIBDIR@/libweston-16:@LIBDIR@/weston:$LD_LIBRARY_PATH"
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
-    DEFAULT_RUNTIME_DIR="/run/user/$(id -u)"
-    if mkdir -p "$DEFAULT_RUNTIME_DIR" 2>/dev/null; then
-        XDG_RUNTIME_DIR="$DEFAULT_RUNTIME_DIR"
-    else
-        XDG_RUNTIME_DIR="/tmp/acglass-runtime-$(id -u)"
-    fi
+    DEFAULT_RUNTIME_DIR="/tmp/acglass-runtime-$(id -u)"
+    FALLBACK_RUNTIME_DIR="/run/user/$(id -u)"
+    DEFAULT_WESTON_SOCKET="${ACGLASS_WAYLAND_DISPLAY:-wayland-acglass}"
+    for candidate in "$DEFAULT_RUNTIME_DIR" "$FALLBACK_RUNTIME_DIR"; do
+        if [ -S "$candidate/$DEFAULT_WESTON_SOCKET" ] ||
+           [ -f "$candidate/acglass-session/env" ]; then
+            XDG_RUNTIME_DIR="$candidate"
+            break
+        fi
+    done
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$DEFAULT_RUNTIME_DIR}"
 fi
 if ! mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; then
     XDG_RUNTIME_DIR="/tmp/acglass-runtime-$(id -u)"
@@ -219,7 +224,7 @@ PID_FILE="$SESSION_DIR/weston.pid"
 ENV_FILE="$SESSION_DIR/env"
 LOG_FILE="$SESSION_DIR/weston.log"
 WESTON_SOCKET="${ACGLASS_WAYLAND_DISPLAY:-wayland-acglass}"
-WESTON_ARGS="${ACGLASS_WESTON_ARGS:---xwayland --no-config}"
+WESTON_ARGS="${ACGLASS_WESTON_ARGS:---xwayland --no-config --idle-time=0 --shell=kiosk-shell.so}"
 IDLE_GRACE_SECONDS="${ACGLASS_IDLE_GRACE_SECONDS:-2}"
 
 lock_session() {
@@ -441,12 +446,162 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
 export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland}"
 export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"
 
+ACGLASS_CHROMIUM_VULKAN_AUTO="${ACGLASS_CHROMIUM_VULKAN_AUTO:-1}"
+ACGLASS_CHROMIUM_VULKAN_COMMANDS="${ACGLASS_CHROMIUM_VULKAN_COMMANDS:-boxplayer electron electron[0-9]* chrome chrome-* chromium chromium-* google-chrome google-chrome-* microsoft-edge microsoft-edge-* msedge brave-browser vivaldi vivaldi-* opera code code-insiders cursor discord slack teams obsidian}"
+ACGLASS_CHROMIUM_VULKAN_FLAGS="${ACGLASS_CHROMIUM_VULKAN_FLAGS:---ozone-platform=wayland --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan --use-angle=vulkan --ignore-gpu-blocklist --disable-gpu-sandbox}"
+
+is_chromium_vulkan_command() {
+    local exe="$1"
+    local base="${exe##*/}"
+    local base_lc
+    base_lc="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+    local pattern
+    for pattern in $ACGLASS_CHROMIUM_VULKAN_COMMANDS; do
+        case "$base_lc" in
+            $pattern) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+apply_chromium_vulkan_env() {
+    [ "$ACGLASS_CHROMIUM_VULKAN_AUTO" = "1" ] || return 0
+    export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-wayland}"
+    export CHROME_EXTRA_FLAGS="${CHROME_EXTRA_FLAGS:-$ACGLASS_CHROMIUM_VULKAN_FLAGS}"
+    export CHROMIUM_FLAGS="${CHROMIUM_FLAGS:-$ACGLASS_CHROMIUM_VULKAN_FLAGS}"
+    export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:-$ACGLASS_CHROMIUM_VULKAN_FLAGS}"
+}
+
+has_chromium_flag() {
+    local key="$1"
+    shift
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            "$key"|"$key"=*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+prepare_direct_chromium_vulkan_argv() {
+    [ "$ACGLASS_CHROMIUM_VULKAN_AUTO" = "1" ] || return 0
+    [ "$#" -gt 0 ] || return 0
+    is_chromium_vulkan_command "$1" || return 0
+
+    apply_chromium_vulkan_env
+    local prepared=("$@")
+    local flag key
+    for flag in $ACGLASS_CHROMIUM_VULKAN_FLAGS; do
+        key="${flag%%=*}"
+        if ! has_chromium_flag "$key" "$@"; then
+            prepared+=("$flag")
+        fi
+    done
+    set -- "${prepared[@]}"
+    ACGLASS_PREPARED_ARGV=("$@")
+}
+
+rewrite_bash_lc_chromium_vulkan_command() {
+    [ "$ACGLASS_CHROMIUM_VULKAN_AUTO" = "1" ] || return 1
+    [ "$#" -ge 3 ] || return 1
+    case "${1##*/}" in
+        bash|sh) ;;
+        *) return 1 ;;
+    esac
+    [ "$2" = "-lc" ] || [ "$2" = "-c" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+
+    local rewritten
+    rewritten="$(
+        ACGLASS_CHROMIUM_VULKAN_COMMANDS="$ACGLASS_CHROMIUM_VULKAN_COMMANDS" \
+        ACGLASS_CHROMIUM_VULKAN_FLAGS="$ACGLASS_CHROMIUM_VULKAN_FLAGS" \
+        python3 - "$3" << 'PY'
+import fnmatch
+import os
+import shlex
+import sys
+
+cmd = sys.argv[1]
+if any(ch in cmd for ch in "\n;|&<>"):
+    sys.exit(2)
+
+try:
+    tokens = shlex.split(cmd, posix=True)
+except ValueError:
+    sys.exit(2)
+
+if not tokens:
+    sys.exit(2)
+
+def is_assignment(token):
+    if "=" not in token or token.startswith("="):
+        return False
+    name = token.split("=", 1)[0]
+    return name.replace("_", "A").isalnum() and not name[0].isdigit()
+
+index = 0
+if tokens[0] == "env":
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("-"):
+            index += 1
+            continue
+        if is_assignment(token):
+            index += 1
+            continue
+        break
+else:
+    while index < len(tokens) and is_assignment(tokens[index]):
+        index += 1
+
+if index >= len(tokens):
+    sys.exit(2)
+
+base = os.path.basename(tokens[index]).lower()
+patterns = os.environ["ACGLASS_CHROMIUM_VULKAN_COMMANDS"].split()
+if not any(fnmatch.fnmatchcase(base, pattern) for pattern in patterns):
+    sys.exit(2)
+
+flags = os.environ["ACGLASS_CHROMIUM_VULKAN_FLAGS"].split()
+existing = {token.split("=", 1)[0] for token in tokens[index + 1:]}
+insert = [flag for flag in flags if flag.split("=", 1)[0] not in existing]
+if not insert:
+    sys.exit(2)
+
+tokens[index + 1:index + 1] = insert
+print(shlex.join(tokens))
+PY
+    )" || return 1
+
+    [ -n "$rewritten" ] || return 1
+    apply_chromium_vulkan_env
+    ACGLASS_PREPARED_ARGV=("$1" "$2" "$rewritten")
+    if [ "$#" -gt 3 ]; then
+        ACGLASS_PREPARED_ARGV+=("${@:4}")
+    fi
+    return 0
+}
+
+prepare_app_command() {
+    ACGLASS_PREPARED_ARGV=("$@")
+    rewrite_bash_lc_chromium_vulkan_command "$@" && return 0
+    prepare_direct_chromium_vulkan_argv "$@"
+}
+
 APP_LOG="$APPS_DIR/launch-$(date +%Y%m%d-%H%M%S)-$$.log"
 case "$APP_ID" in
     *[!A-Za-z0-9_.:-]*)
         APP_ID=
         ;;
 esac
+prepare_app_command "$@"
+set -- "${ACGLASS_PREPARED_ARGV[@]}"
+mkdir -p "$APP_IDS_DIR"
 if command -v setsid >/dev/null 2>&1; then
     setsid "$@" >"$APP_LOG" 2>&1 &
     APP_PGID=$!
@@ -461,7 +616,6 @@ APP_MARKER="$APPS_DIR/$APP_PID"
     printf 'log=%s\n' "$APP_LOG"
 } > "$APP_MARKER"
 if [ -n "$APP_ID" ]; then
-    mkdir -p "$APP_IDS_DIR"
     APP_ID_FILE="$APP_IDS_DIR/$APP_ID"
     printf '%s\n' "$APP_MARKER" > "$APP_ID_FILE"
 fi
@@ -526,11 +680,17 @@ case "$APP_ID" in
 esac
 
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
-    if [ -d "/run/user/$(id -u)" ]; then
-        XDG_RUNTIME_DIR="/run/user/$(id -u)"
-    else
-        XDG_RUNTIME_DIR="/tmp/acglass-runtime-$(id -u)"
-    fi
+    DEFAULT_RUNTIME_DIR="/tmp/acglass-runtime-$(id -u)"
+    FALLBACK_RUNTIME_DIR="/run/user/$(id -u)"
+    DEFAULT_WESTON_SOCKET="${ACGLASS_WAYLAND_DISPLAY:-wayland-acglass}"
+    for candidate in "$DEFAULT_RUNTIME_DIR" "$FALLBACK_RUNTIME_DIR"; do
+        if [ -S "$candidate/$DEFAULT_WESTON_SOCKET" ] ||
+           [ -f "$candidate/acglass-session/env" ]; then
+            XDG_RUNTIME_DIR="$candidate"
+            break
+        fi
+    done
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$DEFAULT_RUNTIME_DIR}"
 fi
 
 SESSION_DIR="${ACGLASS_SESSION_DIR:-$XDG_RUNTIME_DIR/acglass-session}"

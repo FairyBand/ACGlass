@@ -197,21 +197,12 @@ public class MainActivity extends Activity {
     private void launchApp(LinuxContainer container, LinuxApp app) {
         String appId = "acglass-" + System.currentTimeMillis() + "-" +
             UUID.randomUUID().toString();
-        Intent intent = new Intent(this, DisplayActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT |
-                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
-        intent.putExtra(ACGlassPrefs.EXTRA_SOCKET,
-                        ACGlassPrefs.getAndroidSocketPath(this));
-        intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME,
-                        container.name + ": " + app.name);
-        intent.putExtra(ACGlassPrefs.EXTRA_APP_COMMAND, app.command);
-        intent.putExtra(ACGlassPrefs.EXTRA_CONTAINER_NAME, container.name);
-        intent.putExtra(ACGlassPrefs.EXTRA_APP_ID, appId);
-        startActivity(intent);
 
         new Thread(() -> {
             long launchStart = SystemClock.uptimeMillis();
             try {
+                RootDroidspaces.ensureDisplayBackend(this, container.name);
+                runOnUiThread(() -> openDisplayForApp(container, app, appId));
                 RootDroidspaces.launchApp(this, container.name, app.command,
                                          appId);
             } catch (Exception e) {
@@ -234,6 +225,21 @@ public class MainActivity extends Activity {
                 notifyAppFinished(appId);
             }
         }, "acglass-launch").start();
+    }
+
+    private void openDisplayForApp(LinuxContainer container, LinuxApp app,
+                                   String appId) {
+        Intent intent = new Intent(this, DisplayActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT |
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        intent.putExtra(ACGlassPrefs.EXTRA_SOCKET,
+                        ACGlassPrefs.getAndroidSocketPath(this));
+        intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME,
+                        container.name + ": " + app.name);
+        intent.putExtra(ACGlassPrefs.EXTRA_APP_COMMAND, app.command);
+        intent.putExtra(ACGlassPrefs.EXTRA_CONTAINER_NAME, container.name);
+        intent.putExtra(ACGlassPrefs.EXTRA_APP_ID, appId);
+        startActivity(intent);
     }
 
     private void notifyAppFinished(String appId) {

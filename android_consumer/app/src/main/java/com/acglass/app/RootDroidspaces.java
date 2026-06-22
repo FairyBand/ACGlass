@@ -118,6 +118,80 @@ final class RootDroidspaces {
             "acglass-run -- bash -lc " + shellQuote(command));
     }
 
+    static void ensureDisplayBackend(Context context, String container)
+        throws IOException, InterruptedException {
+        ensureDisplayDaemon(context);
+        ensureContainerSocketMount(context, container);
+    }
+
+    private static void ensureDisplayDaemon(Context context)
+        throws IOException, InterruptedException {
+        String socket = ACGlassPrefs.getAndroidSocketPath(context);
+        String command =
+            "sock=" + shellQuote(socket) + "; " +
+            "log=/data/local/tmp/acglass-display-daemon.log; " +
+            "find_pids() { " +
+            "pidof display_daemon 2>/dev/null; " +
+            "pidof acglass_display_daemon 2>/dev/null; " +
+            "}; " +
+            "pids=\"$(find_pids | tr '\\n' ' ')\"; " +
+            "if [ -S \"$sock\" ] && [ -n \"$pids\" ]; then " +
+            "chmod 666 \"$sock\" 2>/dev/null || true; " +
+            "echo \"display daemon already running: $pids\"; " +
+            "exit 0; " +
+            "fi; " +
+            "if [ -n \"$pids\" ]; then kill $pids 2>/dev/null || true; sleep 0.2; fi; " +
+            "rm -f \"$sock\"; " +
+            "mkdir -p \"$(dirname \"$sock\")\"; " +
+            "bin=/data/adb/modules/acglass-daemon/display_daemon; " +
+            "if [ ! -x \"$bin\" ] && [ -x /data/local/tmp/acglass_display_daemon ]; then " +
+            "bin=/data/local/tmp/acglass_display_daemon; " +
+            "fi; " +
+            "if [ ! -x \"$bin\" ]; then " +
+            "echo \"ERROR: display daemon binary not found\"; " +
+            "exit 1; " +
+            "fi; " +
+            "nohup \"$bin\" \"$sock\" >\"$log\" 2>&1 & " +
+            "for i in $(seq 1 80); do " +
+            "if [ -S \"$sock\" ]; then chmod 666 \"$sock\" 2>/dev/null || true; " +
+            "echo \"display daemon started: $bin\"; exit 0; fi; " +
+            "sleep 0.1; " +
+            "done; " +
+            "echo \"ERROR: display daemon did not create socket: $sock\"; " +
+            "cat \"$log\" 2>/dev/null; " +
+            "exit 1";
+        String output = runRootCommand(command);
+        Log.i(TAG, output.trim());
+    }
+
+    private static void ensureContainerSocketMount(Context context,
+                                                  String container)
+        throws IOException, InterruptedException {
+        if (container == null || container.trim().isEmpty())
+            return;
+
+        String droidspaces = ACGlassPrefs.getDroidspacesPath(context);
+        String containerSocket = ACGlassPrefs.getContainerSocketPath(context);
+        String command =
+            "droid=" + shellQuote(droidspaces) + "; " +
+            "container=" + shellQuote(container.trim()) + "; " +
+            "sock=" + shellQuote(containerSocket) + "; " +
+            "pid=\"$($droid --name=\"$container\" pid 2>/dev/null | tr -dc '0-9')\"; " +
+            "if [ -z \"$pid\" ]; then exit 0; fi; " +
+            "line=\"$(grep \" $sock \" \"/proc/$pid/mountinfo\" 2>/dev/null | tail -n 1)\"; " +
+            "case \"$line\" in " +
+            "*'//deleted'*) " +
+            "echo \"container display socket bind is stale; restarting $container\"; " +
+            "\"$droid\" --name=\"$container\" restart; " +
+            ";; " +
+            "*) " +
+            "echo \"container display socket bind is ready\"; " +
+            ";; " +
+            "esac";
+        String output = runRootCommand(command);
+        Log.i(TAG, output.trim());
+    }
+
     static void stopApp(Context context, String container, String appId)
         throws IOException, InterruptedException {
         if (container == null || container.trim().isEmpty() ||

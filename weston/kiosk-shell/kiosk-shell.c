@@ -30,10 +30,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include "kiosk-shell.h"
 #include "kiosk-shell-grab.h"
 #include "frontend/weston.h"
+#include "libweston/anland-window-api.h"
 #include "libweston/libweston.h"
 #include "shared/helpers.h"
 #include "shared/xalloc.h"
@@ -141,6 +143,10 @@ xwayland_get_xwayland_name(struct kiosk_shell_surface *shsurf, enum window_atom_
 static void
 kiosk_shell_surface_set_output(struct kiosk_shell_surface *shsurf,
 			       struct kiosk_shell_output *shoutput);
+static struct kiosk_shell_output *
+kiosk_shell_surface_find_best_output(struct kiosk_shell_surface *shsurf);
+static struct kiosk_shell_surface *
+kiosk_shell_surface_get_parent_root(struct kiosk_shell_surface *shsurf);
 static void
 kiosk_shell_surface_set_parent(struct kiosk_shell_surface *shsurf,
 			       struct kiosk_shell_surface *parent);
@@ -150,6 +156,113 @@ kiosk_shell_output_set_active_surface_tree(struct kiosk_shell_output *shoutput,
 static void
 kiosk_shell_output_raise_surface_subtree(struct kiosk_shell_output *shoutput,
 					 struct kiosk_shell_surface *shroot);
+static void
+kiosk_shell_surface_activate(struct kiosk_shell_surface *shsurf,
+			     struct kiosk_shell_seat *kiosk_seat,
+			     uint32_t activate_flags);
+
+static void
+acglass_emit_window_event(struct kiosk_shell_surface *shsurf, uint32_t type)
+{
+	const struct weston_anland_window_api *api;
+	const char *app_id;
+	const char *title;
+	pid_t pid;
+
+	if (!shsurf || !shsurf->desktop_surface)
+		return;
+
+	api = weston_anland_window_get_api(shsurf->shell->compositor);
+	if (!api || !api->send_window_event)
+		return;
+
+	app_id = weston_desktop_surface_get_app_id(shsurf->desktop_surface);
+	title = weston_desktop_surface_get_title(shsurf->desktop_surface);
+	pid = weston_desktop_surface_get_pid(shsurf->desktop_surface);
+
+	api->send_window_event(shsurf->shell->compositor,
+			       type,
+			       shsurf->acglass_window_id,
+			       pid > 0 ? (uint32_t)pid : 0,
+			       app_id,
+			       title);
+	weston_log("acglass: kiosk window event type=%u id=%u app_id=%s title=%s\n",
+		   type, shsurf->acglass_window_id,
+		   app_id ? app_id : "",
+		   title ? title : "");
+}
+
+static struct kiosk_shell_surface *
+acglass_find_window(struct kiosk_shell *shell, uint32_t window_id)
+{
+	struct weston_view *view;
+
+	wl_list_for_each(view, &shell->normal_layer.view_list.link,
+			 layer_link.link) {
+		struct kiosk_shell_surface *shsurf =
+			get_kiosk_shell_surface(view->surface);
+
+		if (shsurf && shsurf->acglass_window_id == window_id)
+			return shsurf;
+	}
+
+	wl_list_for_each(view, &shell->inactive_layer.view_list.link,
+			 layer_link.link) {
+		struct kiosk_shell_surface *shsurf =
+			get_kiosk_shell_surface(view->surface);
+
+		if (shsurf && shsurf->acglass_window_id == window_id)
+			return shsurf;
+	}
+
+	return NULL;
+}
+
+static void
+acglass_restore_window(struct kiosk_shell *shell, uint32_t window_id)
+{
+	struct kiosk_shell_surface *shsurf = acglass_find_window(shell, window_id);
+	struct kiosk_shell_output *shoutput;
+	struct weston_seat *seat;
+	struct kiosk_shell_seat *kiosk_seat;
+
+	if (!shsurf || !shsurf->view)
+		return;
+
+	if (!shsurf->output)
+		kiosk_shell_surface_set_output(
+			shsurf, kiosk_shell_surface_find_best_output(shsurf));
+	shoutput = shsurf->output;
+	if (!shoutput)
+		return;
+
+	kiosk_shell_output_set_active_surface_tree(
+		shoutput, kiosk_shell_surface_get_parent_root(shsurf));
+	kiosk_shell_output_raise_surface_subtree(shoutput, shsurf);
+
+	seat = get_kiosk_shell_first_seat(shell);
+	kiosk_seat = get_kiosk_shell_seat(seat);
+	if (seat && kiosk_seat)
+		kiosk_shell_surface_activate(shsurf, kiosk_seat,
+					     WESTON_ACTIVATE_FLAG_CONFIGURE);
+
+	weston_compositor_damage_all(shell->compositor);
+	acglass_emit_window_event(shsurf, WESTON_ANLAND_WINDOW_EVENT_RESTORED);
+}
+
+static void
+acglass_window_command_handler(struct weston_compositor *compositor,
+			       uint32_t type,
+			       uint32_t window_id,
+			       void *userdata)
+{
+	struct kiosk_shell *shell = userdata;
+
+	(void)compositor;
+
+	if (type == WESTON_ANLAND_WINDOW_COMMAND_RESTORE)
+		acglass_restore_window(shell, window_id);
+}
 
 static void
 kiosk_shell_surface_notify_parent_destroy(struct wl_listener *listener, void *data)
@@ -522,6 +635,9 @@ kiosk_shell_surface_create(struct kiosk_shell *shell,
 	shsurf->view = view;
 	shsurf->shell = shell;
 	shsurf->appid_output_assigned = false;
+	shsurf->acglass_window_id = ++shell->acglass_next_window_id;
+	if (shsurf->acglass_window_id == 0)
+		shsurf->acglass_window_id = ++shell->acglass_next_window_id;
 
 	weston_desktop_surface_set_user_data(desktop_surface, shsurf);
 
@@ -859,6 +975,7 @@ desktop_surface_added(struct weston_desktop_surface *desktop_surface,
 		return;
 
 	kiosk_shell_surface_set_fullscreen(shsurf, NULL);
+	acglass_emit_window_event(shsurf, WESTON_ANLAND_WINDOW_EVENT_OPENED);
 }
 
 /* Return the shell surface that should gain focus after the specified shsurf is
@@ -936,6 +1053,8 @@ desktop_surface_removed(struct weston_desktop_surface *desktop_surface,
 
 	if (!shsurf)
 		return;
+
+	acglass_emit_window_event(shsurf, WESTON_ANLAND_WINDOW_EVENT_CLOSED);
 
 	seat = get_kiosk_shell_first_seat(shell);
 	kiosk_seat = get_kiosk_shell_seat(seat);
@@ -1190,6 +1309,25 @@ static void
 desktop_surface_minimized_requested(struct weston_desktop_surface *desktop_surface,
 				    void *shell)
 {
+	struct kiosk_shell_surface *shsurf =
+		weston_desktop_surface_get_user_data(desktop_surface);
+	struct kiosk_shell_output *shoutput;
+	struct kiosk_shell_surface *shroot;
+
+	if (!shsurf || !shsurf->output)
+		return;
+
+	shoutput = shsurf->output;
+	shroot = kiosk_shell_surface_get_parent_root(shsurf);
+
+	if (shoutput->active_surface_tree == &shroot->surface_tree_list)
+		kiosk_shell_output_set_active_surface_tree(shoutput, NULL);
+	else
+		weston_view_move_to_layer(shsurf->view,
+					  &shsurf->shell->inactive_layer.view_list);
+
+	weston_compositor_damage_all(shsurf->shell->compositor);
+	acglass_emit_window_event(shsurf, WESTON_ANLAND_WINDOW_EVENT_MINIMIZED);
 }
 
 static void
@@ -1418,6 +1556,11 @@ kiosk_shell_destroy(struct wl_listener *listener, void *data)
 		container_of(listener, struct kiosk_shell, destroy_listener);
 	struct kiosk_shell_output *shoutput, *tmp;
 	struct kiosk_shell_seat *shseat, *shseat_next;
+	const struct weston_anland_window_api *api;
+
+	api = weston_anland_window_get_api(shell->compositor);
+	if (api && api->set_window_command_handler)
+		api->set_window_command_handler(shell->compositor, NULL, NULL);
 
 	wl_list_remove(&shell->destroy_listener.link);
 	wl_list_remove(&shell->output_created_listener.link);
@@ -1486,6 +1629,7 @@ wet_shell_init(struct weston_compositor *ec,
 		return -1;
 
 	shell->compositor = ec;
+	shell->acglass_next_window_id = 0;
 
 	if (!weston_compositor_add_destroy_listener_once(ec,
 							 &shell->destroy_listener,
@@ -1542,6 +1686,13 @@ wet_shell_init(struct weston_compositor *ec,
 	screenshooter_create(ec);
 
 	kiosk_shell_add_bindings(shell);
+
+	const struct weston_anland_window_api *api =
+		weston_anland_window_get_api(ec);
+	if (api && api->set_window_command_handler)
+		api->set_window_command_handler(ec,
+						acglass_window_command_handler,
+						shell);
 
 	return 0;
 }

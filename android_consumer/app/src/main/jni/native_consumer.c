@@ -43,6 +43,7 @@ struct consumer_state {
     int screen_w;
     int screen_h;
     char socket_path[108];
+    unsigned long frame_counter;
 };
 
 static struct consumer_state g_state = {
@@ -234,6 +235,8 @@ static int do_connect(struct consumer_state *s)
     socket_path[sizeof(socket_path) - 1] = '\0';
     pthread_mutex_unlock(&s->lock);
 
+    LOGI("do_connect: socket=%s", socket_path);
+
     if (s->ctx) {
         disconnect(s->ctx);
         s->ctx = NULL;
@@ -252,6 +255,9 @@ static int do_connect(struct consumer_state *s)
     int total = min_undequeued + 2;
     if (total > MAX_COLLECT_BUFS)
         total = MAX_COLLECT_BUFS;
+
+    LOGI("window geometry %dx%d min_undequeued=%d total=%d",
+         s->screen_w, s->screen_h, min_undequeued, total);
 
     api.setBufferCount(win, total);
 
@@ -272,6 +278,7 @@ static int do_connect(struct consumer_state *s)
     push_dmabufs(s->ctx, s->dmabuf_fds, s->dmabuf_infos, s->buf_count);
 
     s->need_reconnect = false;
+    s->frame_counter = 0;
     LOGI("connected");
     return 0;
 }
@@ -318,12 +325,15 @@ static void *render_thread_func(void *arg)
         }
 
         if (idx < 0) {
+            LOGE("locked unknown buffer bits=%p", buf.bits);
             ANativeWindow_unlockAndPost(s->window);
             usleep(16000);
             continue;
         }
 
+        unsigned long frame = ++s->frame_counter;
         if (select_dmabuf(s->ctx, idx) < 0 || refresh_done(s->ctx) < 0) {
+            LOGE("frame %lu refresh failed idx=%d", frame, idx);
             ANativeWindow_unlockAndPost(s->window);
             usleep(16000);
             continue;
@@ -371,6 +381,8 @@ JNIEXPORT void JNICALL
 Java_com_acglass_app_MainActivity_nativeStart(
     JNIEnv *env, jobject thiz, jobject surface)
 {
+    LOGI("nativeStart");
+
     if (!api_loaded) {
         if (anw_api_load(&api) < 0) {
             LOGE("failed to load ANativeWindow hidden API");
@@ -419,6 +431,8 @@ JNIEXPORT void JNICALL
 Java_com_acglass_app_MainActivity_nativeStop(
     JNIEnv *env, jobject thiz)
 {
+    LOGI("nativeStop");
+
     pthread_mutex_lock(&g_state.lock);
 
     if (g_state.running) {

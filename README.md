@@ -205,7 +205,11 @@ ACGLASS_START_DAEMON=0
 ACGLASS_START_ANDROID=0
 ACGLASS_SESSION_DIR=/tmp/acglass-runtime-1000/acglass-session
 ACGLASS_WAYLAND_DISPLAY=wayland-acglass
+ACGLASS_WESTON_ARGS="--xwayland --no-config --idle-time=0 --shell=kiosk-shell.so"
 ACGLASS_IDLE_GRACE_SECONDS=2
+ACGLASS_CHROMIUM_VULKAN_AUTO=1
+ACGLASS_CHROMIUM_VULKAN_COMMANDS="boxplayer electron chromium chrome ..."
+ACGLASS_CHROMIUM_VULKAN_FLAGS="--ozone-platform=wayland --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan --use-angle=vulkan --ignore-gpu-blocklist --disable-gpu-sandbox"
 ```
 
 `ACGLASS_START_DAEMON` and `ACGLASS_START_ANDROID` default to `0` because the
@@ -214,6 +218,18 @@ not from inside the Linux container. Set them to `1` only for manual debugging
 from an Android shell where the daemon binary and `am` command are available.
 
 The lower-level Weston display backend is still named `anland` internally.
+ACGlass defaults to Weston's `kiosk-shell.so` rather than `desktop-shell.so`,
+so launched Linux GUI apps do not pull in Weston's desktop background, panel,
+or lock-screen shell semantics. The ACGlass window event bridge is wired into
+kiosk-shell as well, keeping Android task/window restore behavior on the same
+native Surface/dmabuf/socket path.
+
+Chromium/Electron applications are launched with Vulkan-oriented defaults when
+their executable name matches `ACGLASS_CHROMIUM_VULKAN_COMMANDS`. This keeps
+Electron apps such as BoxPlayer on Ozone Wayland with ANGLE Vulkan instead of
+falling back to the container's broken GL/GBM path. Set
+`ACGLASS_CHROMIUM_VULKAN_AUTO=0` to disable this behavior, or override
+`ACGLASS_CHROMIUM_VULKAN_FLAGS` for a specific container.
 
 `acglass-run` manages one shared Weston session per `ACGLASS_SESSION_DIR`.
 The first launched GUI app starts the session, later apps reuse the same

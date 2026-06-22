@@ -3,12 +3,20 @@
 
 # Android / Gradle build outputs
 .gradle/
+.gradle-home/
 build/
 android_consumer/.gradle/
 android_consumer/build/
 android_consumer/app/build/
 android_consumer/app/.cxx/
 android_consumer/local.properties
+android_consumer/manual-android-*/
+android_consumer/manual-android-*.jar
+android_consumer/manual-build-*/
+android_consumer/jar-patch-*/
+android_consumer/py-patch-*/
+android_consumer/zip-patch-*/
+android_consumer/manual-javac-test*/
 
 # Native build outputs
 weston/builddir*/
@@ -23,6 +31,10 @@ build_daemon_android/
 *.zip
 *.tar.gz
 *.deb
+*.idsig
+*.png
+classes.dex
+classes2.dex
 magisk_module/display_daemon
 
 # Editor / OS files

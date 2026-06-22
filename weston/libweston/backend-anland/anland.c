@@ -11,7 +11,29 @@
 
 #include <libweston/libweston.h>
 #include <libweston/backend-anland.h>
+#if __has_include(<libweston/anland-window-api.h>)
 #include <libweston/anland-window-api.h>
+#else
+#include <libweston/plugin-registry.h>
+#define WESTON_ANLAND_WINDOW_API_NAME "weston_anland_window_api_v1"
+typedef void (*weston_anland_window_command_handler_t)(
+	struct weston_compositor *compositor,
+	uint32_t type,
+	uint32_t window_id,
+	void *userdata);
+struct weston_anland_window_api {
+	void (*send_window_event)(struct weston_compositor *compositor,
+				  uint32_t type,
+				  uint32_t window_id,
+				  uint32_t pid,
+				  const char *app_id,
+				  const char *title);
+	void (*set_window_command_handler)(
+		struct weston_compositor *compositor,
+		weston_anland_window_command_handler_t handler,
+		void *userdata);
+};
+#endif
 #include "shared/helpers.h"
 #include "pixel-formats.h"
 #include "renderer-gl/gl-renderer.h"
@@ -372,13 +394,6 @@ anland_try_reconnect(struct anland_backend *b)
 							    anland_buf_ready_handler, b);
 	}
 
-	int data_fd = get_data_fd(b->display);
-	if (data_fd >= 0) {
-		b->input_fd_source = wl_event_loop_add_fd(loop, data_fd,
-							   WL_EVENT_READABLE,
-							   anland_input_fd_handler, b);
-	}
-
 	/* Stop the reconnect timer — we're back in business. */
 	if (b->reconnect_timer)
 		wl_event_source_timer_update(b->reconnect_timer, 0);
@@ -524,6 +539,7 @@ anland_buf_ready_handler(int fd, uint32_t mask, void *data)
 		if (wait_buffer_async_result(b->display, &buf) != 0)
 			return 0;
 		b->dmabuf_received = true;
+		weston_log("anland: first buffer-ready event, importing dmabufs\n");
 
 		struct weston_output *output;
 		wl_list_for_each(output, &b->compositor->output_list, link) {
@@ -532,6 +548,18 @@ anland_buf_ready_handler(int fd, uint32_t mask, void *data)
 				if (anland_output_import_dmabufs(vout) < 0)
 					weston_log("anland: dmabuf import failed\n");
 				break;
+			}
+		}
+		if (!b->input_fd_source) {
+			struct wl_event_loop *loop =
+				wl_display_get_event_loop(b->compositor->wl_display);
+			int data_fd = get_data_fd(b->display);
+
+			if (data_fd >= 0) {
+				b->input_fd_source =
+					wl_event_loop_add_fd(loop, data_fd,
+							     WL_EVENT_READABLE,
+							     anland_input_fd_handler, b);
 			}
 		}
 	} else {
@@ -573,12 +601,20 @@ anland_output_repaint(struct weston_output *output_base)
 	assert(output);
 
 	if (output->buf_count == 0) {
+		weston_log("anland: repaint requested before dmabufs imported\n");
 		weston_output_arm_frame_timer(output_base,
 					      output->finish_frame_timer);
 		return 0;
 	}
 
 	int idx = get_selected_idx(b->display);
+	if (idx < 0 || idx >= output->buf_count || !output->renderbuffers[idx]) {
+		weston_log("anland: invalid repaint idx=%d buf_count=%d\n",
+			   idx, output->buf_count);
+		weston_output_arm_frame_timer(output_base,
+					      output->finish_frame_timer);
+		return 0;
+	}
 	weston_renderbuffer_t rb = output->renderbuffers[idx];
 
 	pixman_region32_init(&damage);
@@ -1006,7 +1042,7 @@ anland_backend_create(struct weston_compositor *compositor,
 	weston_log("anland: connected to daemon at %s, refresh=%d mHz\n",
 		   b->socket_path, b->refresh);
 
-	if (config->renderer != WESTON_RENDERER_GL) {
+	{
 		const struct vulkan_renderer_display_options vk_options = {
 			.formats = b->formats,
 			.formats_count = b->formats_count,
@@ -1014,41 +1050,15 @@ anland_backend_create(struct weston_compositor *compositor,
 		ret = weston_compositor_init_renderer(compositor,
 						      WESTON_RENDERER_VULKAN,
 						      &vk_options.base);
-		if (ret == 0)
-			goto renderer_ok;
-		if (config->renderer == WESTON_RENDERER_VULKAN) {
-			weston_log("anland: Vulkan renderer failed\n");
-			goto err_display;
-		}
-		weston_log("anland: Vulkan renderer failed, trying GL\n");
-	}
-	{
-		const struct gl_renderer_display_options gl_options = {
-			.egl_platform = EGL_PLATFORM_SURFACELESS_MESA,
-			.egl_native_display = NULL,
-			.formats = b->formats,
-			.formats_count = b->formats_count,
-		};
-		ret = weston_compositor_init_renderer(compositor,
-						      WESTON_RENDERER_GL,
-						      &gl_options.base);
 	}
 	if (ret < 0) {
-		weston_log("anland: GL renderer failed\n");
+		weston_log("anland: Vulkan renderer failed\n");
 		goto err_display;
 	}
-renderer_ok:
 
 	struct wl_event_loop *loop =
 		wl_display_get_event_loop(compositor->wl_display);
 	b->reconnect_timer = wl_event_loop_add_timer(loop, anland_reconnect_timer_handler, b);
-
-	int data_fd = get_data_fd(b->display);
-	if (data_fd >= 0) {
-		b->input_fd_source = wl_event_loop_add_fd(loop, data_fd,
-							   WL_EVENT_READABLE,
-							   anland_input_fd_handler, b);
-	}
 
 	int buf_ready_fd = get_buffer_ready_fd(b->display);
 	if (buf_ready_fd >= 0) {

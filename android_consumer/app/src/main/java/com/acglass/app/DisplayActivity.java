@@ -22,10 +22,14 @@ import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 import android.widget.Toast;
 
+import java.util.HashSet;
+import java.util.Set;
+
 
 public class DisplayActivity extends Activity implements SurfaceHolder.Callback {
     private static final String TAG = "ACGlass";
     private static final long BACK_EXIT_WINDOW_MS = 1600;
+    private static final long EMPTY_WINDOW_EXIT_DELAY_MS = 300;
     private static final int WINDOW_EVENT_OPENED = 1;
     private static final int WINDOW_EVENT_CLOSED = 2;
     private static final int WINDOW_EVENT_MINIMIZED = 3;
@@ -45,8 +49,11 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     private boolean closingFromBack;
     private volatile boolean windowEventThreadRunning;
     private volatile boolean windowMinimizedByCompositor;
+    private volatile boolean keepDisplayWhileBackgrounded;
     private volatile int lastWindowId;
     private volatile int displayGeneration;
+    private final Set<Integer> activeWindowIds = new HashSet<>();
+    private int emptyWindowExitGeneration;
     private Thread windowEventThread;
     private OnBackInvokedCallback backInvokedCallback;
     private BroadcastReceiver appFinishedReceiver;
@@ -160,6 +167,11 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
             containerName = extraContainer == null ? null : extraContainer;
 
             String extraAppId = intent.getStringExtra(ACGlassPrefs.EXTRA_APP_ID);
+            if (extraAppId != null && !extraAppId.equals(appId)) {
+                activeWindowIds.clear();
+                emptyWindowExitGeneration++;
+                windowMinimizedByCompositor = false;
+            }
             appId = extraAppId == null ? null : extraAppId;
         }
         if (nextSocketPath == null || nextSocketPath.isEmpty())
@@ -177,6 +189,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     protected void onResume() {
         super.onResume();
         hideSystemBars();
+        keepDisplayWhileBackgrounded = false;
         nativeSetSocketPath(socketPath);
         if (surfaceReady) {
             startDisplay(surfaceView.getHolder().getSurface());
@@ -188,7 +201,8 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     @Override
     protected void onPause() {
         super.onPause();
-        stopDisplayAsync();
+        if (!keepDisplayWhileBackgrounded)
+            stopDisplayAsync();
     }
 
     @Override
@@ -221,6 +235,10 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
             unregisterReceiver(appFinishedReceiver);
             appFinishedReceiver = null;
         }
+        activeWindowIds.clear();
+        emptyWindowExitGeneration++;
+        keepDisplayWhileBackgrounded = false;
+        stopDisplayAsync();
         stopWindowEventThread();
         super.onDestroy();
     }
@@ -256,14 +274,47 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
             lastWindowId = windowId;
 
         if (type == WINDOW_EVENT_CLOSED) {
-            closingFromBack = true;
-            finishAndRemoveTask();
+            if (hasLaunchToken() && windowMinimizedByCompositor &&
+                windowId == lastWindowId) {
+                Log.i(TAG, "ignoring close for minimized window id=" + windowId);
+                return;
+            }
+            if (windowId != 0)
+                activeWindowIds.remove(windowId);
+            if (hasLaunchToken() && !activeWindowIds.isEmpty()) {
+                Log.i(TAG, "window closed id=" + windowId +
+                    ", active windows=" + activeWindowIds.size());
+                return;
+            }
+            if (hasLaunchToken()) {
+                scheduleFinishIfNoWindows();
+            } else {
+                closingFromBack = true;
+                finishAndRemoveTask();
+            }
         } else if (type == WINDOW_EVENT_MINIMIZED) {
             windowMinimizedByCompositor = true;
+            keepDisplayWhileBackgrounded = true;
             moveTaskToBack(true);
         } else if (type == WINDOW_EVENT_RESTORED || type == WINDOW_EVENT_OPENED) {
+            if (windowId != 0)
+                activeWindowIds.add(windowId);
+            emptyWindowExitGeneration++;
             windowMinimizedByCompositor = false;
+            keepDisplayWhileBackgrounded = false;
         }
+    }
+
+    private void scheduleFinishIfNoWindows() {
+        int generation = ++emptyWindowExitGeneration;
+        surfaceView.postDelayed(() -> {
+            if (closingFromBack || generation != emptyWindowExitGeneration ||
+                !activeWindowIds.isEmpty())
+                return;
+            Log.i(TAG, "all Linux app windows closed; finishing display");
+            closingFromBack = true;
+            finishAndRemoveTask();
+        }, EMPTY_WINDOW_EXIT_DELAY_MS);
     }
 
     private void requestRestoreLastWindow() {
