@@ -58,6 +58,24 @@ static void clear_deposited_fds(void)
     deposited_fd_count = 0;
 }
 
+static void close_received_fds(int *fds, int fd_count)
+{
+    for (int i = 0; i < fd_count; i++)
+        close(fds[i]);
+}
+
+static void reset_producer_for_screen_change(void)
+{
+    if (!producer)
+        return;
+
+    fprintf(stderr, "daemon: disconnecting producer for screen resize\n");
+    client_free(producer);
+    producer = NULL;
+    producer_waiting_screen = false;
+    producer_waiting_fds = false;
+}
+
 static int send_ctrl(int fd, uint32_t type)
 {
     struct ctrl_msg msg = { .type = type, .size = 0 };
@@ -140,22 +158,30 @@ static void handle_client_data(struct client *c)
             clear_deposited_fds();
             memcpy(deposited_fds, fds, sizeof(int) * fd_count);
             deposited_fd_count = fd_count;
-            fprintf(stderr, "daemon: consumer re-deposited %d fds\n", fd_count);
+            fprintf(stderr, "daemon: consumer re-deposited %d fds\n",
+                    deposited_fd_count);
             if (producer_waiting_fds)
                 try_deliver_fds();
+            fd_count = 0;
+        } else {
+            close_received_fds(fds, fd_count);
         }
         break;
 
     case CTRL_MSG_SCREEN_INFO:
+        close_received_fds(fds, fd_count);
         if (c == consumer && hdr.size == sizeof(struct screen_info)) {
             struct screen_info si;
             memcpy(&si, payload, sizeof(si));
             if (has_screen_info) {
                 if (memcmp(&si, &stored_screen, sizeof(si)) != 0) {
-                    fprintf(stderr, "daemon: rejecting consumer (screen info mismatch)\n");
-                    send_ctrl(c->ctrl_fd, CTRL_MSG_REJECT);
-                    handle_disconnect(c);
-                    return;
+                    fprintf(stderr,
+                            "daemon: screen info changed %ux%u fmt=%u -> %ux%u fmt=%u\n",
+                            stored_screen.width, stored_screen.height,
+                            stored_screen.format,
+                            si.width, si.height, si.format);
+                    stored_screen = si;
+                    reset_producer_for_screen_change();
                 }
             } else {
                 stored_screen = si;
@@ -171,11 +197,13 @@ static void handle_client_data(struct client *c)
         break;
 
     case CTRL_MSG_PICKUP_FDS:
+        close_received_fds(fds, fd_count);
         if (c == producer)
             try_deliver_fds();
         break;
 
     default:
+        close_received_fds(fds, fd_count);
         break;
     }
 }
@@ -228,6 +256,7 @@ static void handle_new_connection(int listen_fd)
             producer_waiting_screen = true;
 
     } else {
+        close_received_fds(fds, fd_count);
         close(client_fd);
         free(c);
         return;

@@ -1175,6 +1175,11 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
 		struct kiosk_shell_output *shoutput = shsurf->output;
 		struct kiosk_shell_seat *kiosk_seat;
 
+		if (shoutput && shoutput->output) {
+			surface->output = shoutput->output;
+			weston_view_set_output(shsurf->view, shoutput->output);
+		}
+
 		weston_surface_map(surface);
 
 		kiosk_seat = get_kiosk_shell_seat(seat);
@@ -1189,6 +1194,14 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
 		if (seat && kiosk_seat)
 			kiosk_shell_surface_activate(shsurf, kiosk_seat,
 						     WESTON_ACTIVATE_FLAG_NONE);
+
+		weston_log("acglass: kiosk mapped window id=%u size=%dx%d fullscreen=%d output=%s\n",
+			   shsurf->acglass_window_id,
+			   surface->width, surface->height,
+			   is_fullscreen ? 1 : 0,
+			   shsurf->output && shsurf->output->output ?
+			   shsurf->output->output->name : "(none)");
+		weston_compositor_damage_all(shsurf->shell->compositor);
 	}
 
 	if (!is_fullscreen && (buf_offset.c.x != 0 || buf_offset.c.y != 0)) {
@@ -1202,6 +1215,14 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
 
 	shsurf->last_width = surface->width;
 	shsurf->last_height = surface->height;
+
+	if (is_resized) {
+		weston_log("acglass: kiosk resized window id=%u size=%dx%d fullscreen=%d\n",
+			   shsurf->acglass_window_id,
+			   surface->width, surface->height,
+			   is_fullscreen ? 1 : 0);
+		weston_compositor_damage_all(shsurf->shell->compositor);
+	}
 }
 
 static void
@@ -1269,18 +1290,6 @@ desktop_surface_fullscreen_requested(struct weston_desktop_surface *desktop_surf
 	if (output)
 		shoutput = weston_output_get_shell_private(output);
 
-	/* We should normally be able to ignore fullscreen requests for
-	 * top-level surfaces, since we set them as fullscreen at creation
-	 * time. However, xwayland surfaces set their internal WM state
-	 * regardless of what the shell wants, so they may remove fullscreen
-	 * state before informing weston-desktop of this request. Since we
-	 * always want top-level surfaces to be fullscreen, we need to reapply
-	 * the fullscreen state to force the correct xwayland WM state.
-	 *
-	 * TODO: Explore a model where the XWayland WM doesn't set the internal
-	 * WM surface state itself, rather letting the shell make the decision.
-	 */
-
 	if (!shsurf->parent || fullscreen)
 		kiosk_shell_surface_set_fullscreen(shsurf, shoutput);
 	else
@@ -1294,9 +1303,6 @@ desktop_surface_maximized_requested(struct weston_desktop_surface *desktop_surfa
 	struct kiosk_shell_surface *shsurf =
 		weston_desktop_surface_get_user_data(desktop_surface);
 
-	/* Since xwayland surfaces may have already applied the max/min states
-	 * internally, reapply fullscreen to force the correct xwayland WM state.
-	 * Also see comment in desktop_surface_fullscreen_requested(). */
 	if (!shsurf->parent)
 		kiosk_shell_surface_set_fullscreen(shsurf, NULL);
 	else if (maximized)

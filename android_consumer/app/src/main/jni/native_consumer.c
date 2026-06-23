@@ -23,6 +23,7 @@
 #define PIXEL_FORMAT_RGBA_8888 1
 #define MAX_COLLECT_BUFS 8
 #define DEFAULT_SOCKET_PATH "/data/local/tmp/display_daemon.sock"
+#define FILL_TEST_PATH "/data/local/tmp/acglass-fill-test"
 
 static struct anw_api api;
 static bool api_loaded = false;
@@ -198,6 +199,8 @@ static int collect_dmabufs(struct consumer_state *s)
         s->dmabuf_infos[found].offset = 0;
         LOGI("  buf[%d]: bits=%p fd=%d dup=%d %dx%d stride=%d",
              found, bits, fd, dup_fd, buf.width, buf.height, buf.stride);
+        LOGE("acglass-dmabuf[%d]: bits=%p fd=%d dup=%d %dx%d stride=%d",
+             found, bits, fd, dup_fd, buf.width, buf.height, buf.stride);
         found++;
     }
 
@@ -258,6 +261,8 @@ static int do_connect(struct consumer_state *s)
 
     LOGI("window geometry %dx%d min_undequeued=%d total=%d",
          s->screen_w, s->screen_h, min_undequeued, total);
+    LOGE("acglass-window-geometry: %dx%d min_undequeued=%d total=%d",
+         s->screen_w, s->screen_h, min_undequeued, total);
 
     api.setBufferCount(win, total);
 
@@ -281,6 +286,33 @@ static int do_connect(struct consumer_state *s)
     s->frame_counter = 0;
     LOGI("connected");
     return 0;
+}
+
+static bool fill_test_enabled(void)
+{
+    return access(FILL_TEST_PATH, F_OK) == 0;
+}
+
+static void fill_test_buffer(ANativeWindow_Buffer *buf, unsigned long frame)
+{
+    uint32_t *pixels = (uint32_t *)buf->bits;
+    int stride = buf->stride;
+    int width = buf->width;
+    int height = buf->height;
+    uint8_t phase = (uint8_t)((frame * 3) & 0xff);
+
+    for (int y = 0; y < height; y++) {
+        uint32_t *row = pixels + (size_t)y * stride;
+        for (int x = 0; x < width; x++) {
+            uint8_t r = (uint8_t)((x * 255) / (width > 1 ? width - 1 : 1));
+            uint8_t g = (uint8_t)((y * 255) / (height > 1 ? height - 1 : 1));
+            uint8_t b = phase;
+            row[x] = ((uint32_t)0xff << 24) |
+                     ((uint32_t)b << 16) |
+                     ((uint32_t)g << 8) |
+                     (uint32_t)r;
+        }
+    }
 }
 
 static void on_fallback(void *userdata)
@@ -338,6 +370,14 @@ static void *render_thread_func(void *arg)
             usleep(16000);
             continue;
         }
+
+        if ((frame % 60) == 1) {
+            LOGE("acglass-frame: frame=%lu idx=%d buf=%dx%d stride=%d bits=%p",
+                 frame, idx, buf.width, buf.height, buf.stride, buf.bits);
+        }
+
+        if (fill_test_enabled())
+            fill_test_buffer(&buf, frame);
 
         if (!s->running) {
             ANativeWindow_unlockAndPost(s->window);

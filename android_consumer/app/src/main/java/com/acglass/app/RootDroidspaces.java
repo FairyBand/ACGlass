@@ -112,8 +112,12 @@ final class RootDroidspaces {
         Log.i(TAG, "launching in " + container + " as " + user + ": " +
             command);
         runInContainer(context, container, user,
+            "app_id=" + shellQuote(appId.trim()) + "; " +
+            "session_id=$(printf '%s' \"$app_id\" | tr -c 'A-Za-z0-9_.:-' '_'); " +
             "ACGLASS_SOCKET=" + shellQuote(socket) + " " +
-            "ACGLASS_APP_ID=" + shellQuote(appId) + " " +
+            "ACGLASS_APP_ID=\"$app_id\" " +
+            "ACGLASS_SESSION_DIR=\"/tmp/acglass-runtime-$(id -u)/acglass-session-$session_id\" " +
+            "ACGLASS_WAYLAND_DISPLAY=\"wayland-$session_id\" " +
             "ACGLASS_START_ANDROID=0 ACGLASS_START_DAEMON=0 " +
             "acglass-run -- bash -lc " + shellQuote(command));
     }
@@ -143,9 +147,9 @@ final class RootDroidspaces {
             "if [ -n \"$pids\" ]; then kill $pids 2>/dev/null || true; sleep 0.2; fi; " +
             "rm -f \"$sock\"; " +
             "mkdir -p \"$(dirname \"$sock\")\"; " +
-            "bin=/data/adb/modules/acglass-daemon/display_daemon; " +
-            "if [ ! -x \"$bin\" ] && [ -x /data/local/tmp/acglass_display_daemon ]; then " +
             "bin=/data/local/tmp/acglass_display_daemon; " +
+            "if [ ! -x \"$bin\" ] && [ -x /data/adb/modules/acglass-daemon/display_daemon ]; then " +
+            "bin=/data/adb/modules/acglass-daemon/display_daemon; " +
             "fi; " +
             "if [ ! -x \"$bin\" ]; then " +
             "echo \"ERROR: display daemon binary not found\"; " +
@@ -172,22 +176,24 @@ final class RootDroidspaces {
 
         String droidspaces = ACGlassPrefs.getDroidspacesPath(context);
         String containerSocket = ACGlassPrefs.getContainerSocketPath(context);
+        String androidSocket = ACGlassPrefs.getAndroidSocketPath(context);
         String command =
             "droid=" + shellQuote(droidspaces) + "; " +
             "container=" + shellQuote(container.trim()) + "; " +
+            "android_sock=" + shellQuote(androidSocket) + "; " +
             "sock=" + shellQuote(containerSocket) + "; " +
-            "pid=\"$($droid --name=\"$container\" pid 2>/dev/null | tr -dc '0-9')\"; " +
+            "pid=\"$($droid show --format 2>/dev/null | sed -n \"s/^CONT_${container}=//p\" | head -n 1 | tr -dc '0-9')\"; " +
             "if [ -z \"$pid\" ]; then exit 0; fi; " +
+            "host_inode=\"$(ls -i \"$android_sock\" 2>/dev/null | awk '{print $1}')\"; " +
+            "container_inode=\"$(nsenter -t \"$pid\" -m -- ls -i \"$sock\" 2>/dev/null | awk '{print $1}')\"; " +
             "line=\"$(grep \" $sock \" \"/proc/$pid/mountinfo\" 2>/dev/null | tail -n 1)\"; " +
-            "case \"$line\" in " +
-            "*'//deleted'*) " +
+            "if [ -z \"$line\" ] || [ -z \"$host_inode\" ] || [ -z \"$container_inode\" ] || " +
+            "[ \"$host_inode\" != \"$container_inode\" ]; then " +
             "echo \"container display socket bind is stale; restarting $container\"; " +
             "\"$droid\" --name=\"$container\" restart; " +
-            ";; " +
-            "*) " +
+            "else " +
             "echo \"container display socket bind is ready\"; " +
-            ";; " +
-            "esac";
+            "fi";
         String output = runRootCommand(command);
         Log.i(TAG, output.trim());
     }
@@ -203,7 +209,11 @@ final class RootDroidspaces {
         Log.i(TAG, "stopping in " + container + " as " + user + ": " +
             appId);
         runInContainer(context, container, user,
-            "/opt/acglass/stop_app.sh " + shellQuote(appId.trim()));
+            "app_id=" + shellQuote(appId.trim()) + "; " +
+            "session_id=$(printf '%s' \"$app_id\" | tr -c 'A-Za-z0-9_.:-' '_'); " +
+            "ACGLASS_SESSION_DIR=\"/tmp/acglass-runtime-$(id -u)/acglass-session-$session_id\" " +
+            "ACGLASS_WAYLAND_DISPLAY=\"wayland-$session_id\" " +
+            "/opt/acglass/stop_app.sh \"$app_id\"");
     }
 
     static boolean consumeStopRequested(String appId) {

@@ -1,7 +1,9 @@
 package com.acglass.app;
 
 import android.app.Activity;
+import android.app.ActivityOptions;
 import android.content.Intent;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
@@ -35,6 +37,8 @@ public class MainActivity extends Activity {
         "Linux GUI \u5e94\u7528\u542f\u52a8\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u5bb9\u5668\u540e\u7aef\u914d\u7f6e";
     private static final String WAYLAND_MONITOR_TITLE = "Wayland Monitor";
     private static final long STARTUP_FAILURE_WINDOW_MS = 8000;
+    private static final int DISPLAY_WINDOW_WIDTH_DP = 960;
+    private static final int DISPLAY_WINDOW_HEIGHT_DP = 640;
 
     private LinearLayout appList;
     private TextView statusText;
@@ -203,8 +207,6 @@ public class MainActivity extends Activity {
             try {
                 RootDroidspaces.ensureDisplayBackend(this, container.name);
                 runOnUiThread(() -> openDisplayForApp(container, app, appId));
-                RootDroidspaces.launchApp(this, container.name, app.command,
-                                         appId);
             } catch (Exception e) {
                 boolean stopRequested =
                     RootDroidspaces.consumeStopRequested(appId);
@@ -222,7 +224,6 @@ public class MainActivity extends Activity {
                 }
             } finally {
                 RootDroidspaces.consumeStopRequested(appId);
-                notifyAppFinished(appId);
             }
         }, "acglass-launch").start();
     }
@@ -239,14 +240,7 @@ public class MainActivity extends Activity {
         intent.putExtra(ACGlassPrefs.EXTRA_APP_COMMAND, app.command);
         intent.putExtra(ACGlassPrefs.EXTRA_CONTAINER_NAME, container.name);
         intent.putExtra(ACGlassPrefs.EXTRA_APP_ID, appId);
-        startActivity(intent);
-    }
-
-    private void notifyAppFinished(String appId) {
-        Intent intent = new Intent(ACGlassPrefs.ACTION_APP_FINISHED);
-        intent.setPackage(getPackageName());
-        intent.putExtra(ACGlassPrefs.EXTRA_APP_ID, appId);
-        sendBroadcast(intent);
+        startActivity(intent, makeDisplayLaunchOptions());
     }
 
     private void openWaylandMonitor() {
@@ -256,7 +250,26 @@ public class MainActivity extends Activity {
         intent.putExtra(ACGlassPrefs.EXTRA_SOCKET,
                         ACGlassPrefs.getAndroidSocketPath(this));
         intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME, WAYLAND_MONITOR_TITLE);
-        startActivity(intent);
+        startActivity(intent, makeDisplayLaunchOptions());
+    }
+
+    private Bundle makeDisplayLaunchOptions() {
+        Rect bounds = centeredLaunchBounds(DISPLAY_WINDOW_WIDTH_DP,
+                                           DISPLAY_WINDOW_HEIGHT_DP);
+        return ActivityOptions.makeBasic()
+            .setLaunchBounds(bounds)
+            .toBundle();
+    }
+
+    private Rect centeredLaunchBounds(int widthDp, int heightDp) {
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int margin = dp(32);
+        int width = Math.min(dp(widthDp), Math.max(1, screenWidth - margin * 2));
+        int height = Math.min(dp(heightDp), Math.max(1, screenHeight - margin * 2));
+        int left = Math.max(0, (screenWidth - width) / 2);
+        int top = Math.max(0, (screenHeight - height) / 2);
+        return new Rect(left, top, left + width, top + height);
     }
 
     private void scanApps() {

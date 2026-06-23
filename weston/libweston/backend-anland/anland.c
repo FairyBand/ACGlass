@@ -619,6 +619,7 @@ anland_output_repaint(struct weston_output *output_base)
 
 	pixman_region32_init(&damage);
 	weston_output_flush_damage_for_primary_plane(output_base, &damage);
+	pixman_region32_union(&damage, &damage, &output_base->region);
 
 	/*
 	 * The consumer rotates the renderbuffer index externally, so this

@@ -20,11 +20,18 @@
         <activity
             android:name=".DisplayActivity"
             android:exported="true"
+            android:theme="@style/ACGlassDisplayTheme"
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:documentLaunchMode="always"
             android:launchMode="standard">
+            <layout
+                android:defaultWidth="960dp"
+                android:defaultHeight="640dp"
+                android:minWidth="360dp"
+                android:minHeight="240dp"
+                android:gravity="center" />
             <property
                 android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
                 android:value="true" />

@@ -5,10 +5,14 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.text.TextUtils;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -17,9 +21,13 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.HashSet;
@@ -30,6 +38,11 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     private static final String TAG = "ACGlass";
     private static final long BACK_EXIT_WINDOW_MS = 1600;
     private static final long EMPTY_WINDOW_EXIT_DELAY_MS = 300;
+    private static final int DEFAULT_WINDOW_WIDTH_DP = 960;
+    private static final int DEFAULT_WINDOW_HEIGHT_DP = 640;
+    private static final int MIN_WINDOW_WIDTH_DP = 360;
+    private static final int MIN_WINDOW_HEIGHT_DP = 240;
+    private static final int WINDOW_MARGIN_DP = 18;
     private static final int WINDOW_EVENT_OPENED = 1;
     private static final int WINDOW_EVENT_CLOSED = 2;
     private static final int WINDOW_EVENT_MINIMIZED = 3;
@@ -40,16 +53,34 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     private static final String BACK_CLOSE_MONITOR =
         "\u518d\u6b21\u8fd4\u56de\u5173\u95ed\u663e\u793a\u5668";
 
+    private FrameLayout desktopRoot;
+    private FrameLayout windowFrame;
+    private LinearLayout titleBar;
+    private TextView titleText;
+    private TextView restoreButton;
     private SurfaceView surfaceView;
     private boolean surfaceReady = false;
     private String socketPath;
     private String containerName;
+    private String appCommand;
     private String appId;
+    private String displayTitle = "ACGlass";
     private long lastBackPressTime;
     private boolean closingFromBack;
+    private boolean customMaximized;
+    private boolean customMinimized;
+    private FrameLayout.LayoutParams normalWindowLayout;
+    private float dragStartRawX;
+    private float dragStartRawY;
+    private int dragStartLeft;
+    private int dragStartTop;
+    private int dragStartWidth;
+    private int dragStartHeight;
     private volatile boolean windowEventThreadRunning;
     private volatile boolean windowMinimizedByCompositor;
     private volatile boolean keepDisplayWhileBackgrounded;
+    private volatile boolean launchRequested;
+    private volatile boolean launchStarted;
     private volatile int lastWindowId;
     private volatile int displayGeneration;
     private final Set<Integer> activeWindowIds = new HashSet<>();
@@ -78,15 +109,17 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON |
-                             WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(
-            visibility -> hideSystemBars());
 
-        surfaceView = new SurfaceView(this);
-        setContentView(surfaceView);
+        buildWindowedLayout();
         surfaceView.getHolder().addCallback(this);
+        surfaceView.setOnTouchListener((v, event) -> handleDisplayTouchEvent(event));
+        surfaceView.setOnGenericMotionListener((v, event) ->
+            handleDisplayGenericMotionEvent(event, event.getX(), event.getY()));
+        surfaceView.setFocusable(true);
+        surfaceView.setFocusableInTouchMode(true);
 
         socketPath = ACGlassPrefs.getAndroidSocketPath(this);
         updateSocketPath(getIntent());
@@ -94,7 +127,6 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         setupCursorHiding();
         setupBackHandling();
         startWindowEventThread();
-        hideSystemBars();
     }
 
     @Override
@@ -108,6 +140,288 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
 
     private void setupCursorHiding() {
         surfaceView.setPointerIcon(PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL));
+    }
+
+    private void buildWindowedLayout() {
+        desktopRoot = new FrameLayout(this);
+        desktopRoot.setBackgroundColor(Color.rgb(34, 38, 43));
+        desktopRoot.setOnClickListener(v -> {
+            if (customMinimized)
+                restoreCustomWindow(true);
+        });
+
+        windowFrame = new FrameLayout(this);
+        windowFrame.setBackground(makeRoundRect(Color.rgb(22, 24, 28),
+                                                Color.rgb(78, 84, 96), dp(8)));
+        windowFrame.setClipToOutline(false);
+
+        LinearLayout chrome = new LinearLayout(this);
+        chrome.setOrientation(LinearLayout.VERTICAL);
+        chrome.setPadding(dp(1), dp(1), dp(1), dp(1));
+
+        titleBar = new LinearLayout(this);
+        titleBar.setOrientation(LinearLayout.HORIZONTAL);
+        titleBar.setGravity(Gravity.CENTER_VERTICAL);
+        titleBar.setPadding(dp(12), 0, dp(6), 0);
+        titleBar.setBackgroundColor(Color.rgb(42, 47, 54));
+
+        titleText = new TextView(this);
+        titleText.setSingleLine(true);
+        titleText.setEllipsize(TextUtils.TruncateAt.END);
+        titleText.setTextColor(Color.WHITE);
+        titleText.setTextSize(14);
+        titleText.setText(displayTitle);
+        titleBar.addView(titleText, new LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+
+        titleBar.addView(makeWindowButton("_", v -> minimizeCustomWindow()));
+        restoreButton = makeWindowButton("[]", v -> toggleCustomMaximized());
+        titleBar.addView(restoreButton);
+        titleBar.addView(makeWindowButton("X", v -> closeFromBack()));
+        titleBar.setOnTouchListener(this::handleTitleBarTouch);
+
+        chrome.addView(titleBar, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+
+        surfaceView = new SurfaceView(this);
+        surfaceView.setZOrderMediaOverlay(true);
+        chrome.addView(surfaceView, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        LinearLayout bottomBar = new LinearLayout(this);
+        bottomBar.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        bottomBar.setBackgroundColor(Color.rgb(35, 39, 46));
+        TextView resizeHandle = new TextView(this);
+        resizeHandle.setText("//");
+        resizeHandle.setTextColor(Color.rgb(166, 176, 190));
+        resizeHandle.setGravity(Gravity.CENTER);
+        resizeHandle.setTextSize(16);
+        resizeHandle.setOnTouchListener(this::handleResizeTouch);
+        bottomBar.addView(resizeHandle, new LinearLayout.LayoutParams(
+            dp(60), ViewGroup.LayoutParams.MATCH_PARENT));
+        chrome.addView(bottomBar, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(18)));
+
+        windowFrame.addView(chrome, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT));
+
+        desktopRoot.addView(windowFrame, initialWindowLayout());
+        setContentView(desktopRoot);
+        desktopRoot.post(this::fitWindowInsideDesktop);
+    }
+
+    private TextView makeWindowButton(String text, View.OnClickListener listener) {
+        TextView button = new TextView(this);
+        button.setText(text);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(18);
+        button.setGravity(Gravity.CENTER);
+        button.setOnClickListener(listener);
+        button.setBackground(makeRoundRect(Color.TRANSPARENT,
+                                           Color.TRANSPARENT, dp(4)));
+        LinearLayout.LayoutParams lp =
+            new LinearLayout.LayoutParams(dp(42), ViewGroup.LayoutParams.MATCH_PARENT);
+        lp.leftMargin = dp(2);
+        button.setLayoutParams(lp);
+        return button;
+    }
+
+    private GradientDrawable makeRoundRect(int color, int strokeColor, int radius) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(radius);
+        if (strokeColor != Color.TRANSPARENT)
+            drawable.setStroke(dp(1), strokeColor);
+        return drawable;
+    }
+
+    private FrameLayout.LayoutParams initialWindowLayout() {
+        int margin = dp(WINDOW_MARGIN_DP);
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int width = Math.min(dp(DEFAULT_WINDOW_WIDTH_DP),
+                             Math.max(dp(MIN_WINDOW_WIDTH_DP),
+                                      screenWidth - margin * 2));
+        int height = Math.min(dp(DEFAULT_WINDOW_HEIGHT_DP),
+                              Math.max(dp(MIN_WINDOW_HEIGHT_DP),
+                                       screenHeight - margin * 2));
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(width, height);
+        lp.gravity = Gravity.CENTER;
+        normalWindowLayout = copyWindowLayout(lp);
+        return lp;
+    }
+
+    private void fitWindowInsideDesktop() {
+        int parentWidth = desktopRoot.getWidth();
+        int parentHeight = desktopRoot.getHeight();
+        if (parentWidth <= 0 || parentHeight <= 0)
+            return;
+
+        int margin = dp(WINDOW_MARGIN_DP);
+        int minWidth = Math.min(dp(MIN_WINDOW_WIDTH_DP),
+                                Math.max(1, parentWidth - margin * 2));
+        int minHeight = Math.min(dp(MIN_WINDOW_HEIGHT_DP),
+                                 Math.max(1, parentHeight - margin * 2));
+        int targetWidth = Math.min(dp(DEFAULT_WINDOW_WIDTH_DP),
+                                   Math.max(minWidth, parentWidth - margin * 2));
+        int targetHeight = Math.min(dp(DEFAULT_WINDOW_HEIGHT_DP),
+                                    Math.max(minHeight, parentHeight - margin * 2));
+
+        FrameLayout.LayoutParams lp =
+            (FrameLayout.LayoutParams)windowFrame.getLayoutParams();
+        lp.width = clamp(lp.width, minWidth, targetWidth);
+        lp.height = clamp(lp.height, minHeight, targetHeight);
+        lp.leftMargin = Math.max(margin, (parentWidth - lp.width) / 2);
+        lp.topMargin = Math.max(margin, (parentHeight - lp.height) / 2);
+        lp.gravity = Gravity.NO_GRAVITY;
+        windowFrame.setLayoutParams(lp);
+        normalWindowLayout = copyWindowLayout(lp);
+    }
+
+    private FrameLayout.LayoutParams copyWindowLayout(FrameLayout.LayoutParams src) {
+        FrameLayout.LayoutParams dst =
+            new FrameLayout.LayoutParams(src.width, src.height);
+        dst.leftMargin = src.leftMargin;
+        dst.topMargin = src.topMargin;
+        dst.gravity = src.gravity;
+        return dst;
+    }
+
+    private boolean handleTitleBarTouch(View view, MotionEvent event) {
+        if (customMaximized || customMinimized)
+            return false;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                dragStartRawX = event.getRawX();
+                dragStartRawY = event.getRawY();
+                FrameLayout.LayoutParams lp =
+                    (FrameLayout.LayoutParams)windowFrame.getLayoutParams();
+                normalizeWindowLayout(lp);
+                dragStartLeft = lp.leftMargin;
+                dragStartTop = lp.topMargin;
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                moveCustomWindow(Math.round(event.getRawX() - dragStartRawX),
+                                 Math.round(event.getRawY() - dragStartRawY));
+                return true;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                normalWindowLayout = copyWindowLayout(
+                    (FrameLayout.LayoutParams)windowFrame.getLayoutParams());
+                return true;
+        }
+        return false;
+    }
+
+    private boolean handleResizeTouch(View view, MotionEvent event) {
+        if (customMaximized || customMinimized)
+            return false;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                dragStartRawX = event.getRawX();
+                dragStartRawY = event.getRawY();
+                FrameLayout.LayoutParams lp =
+                    (FrameLayout.LayoutParams)windowFrame.getLayoutParams();
+                normalizeWindowLayout(lp);
+                dragStartWidth = lp.width;
+                dragStartHeight = lp.height;
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                resizeCustomWindow(Math.round(event.getRawX() - dragStartRawX),
+                                   Math.round(event.getRawY() - dragStartRawY));
+                return true;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                normalWindowLayout = copyWindowLayout(
+                    (FrameLayout.LayoutParams)windowFrame.getLayoutParams());
+                return true;
+        }
+        return false;
+    }
+
+    private void moveCustomWindow(int dx, int dy) {
+        FrameLayout.LayoutParams lp =
+            (FrameLayout.LayoutParams)windowFrame.getLayoutParams();
+        int margin = dp(WINDOW_MARGIN_DP);
+        int maxLeft = Math.max(margin, desktopRoot.getWidth() - lp.width - margin);
+        int maxTop = Math.max(margin, desktopRoot.getHeight() - lp.height - margin);
+        lp.leftMargin = clamp(dragStartLeft + dx, margin, maxLeft);
+        lp.topMargin = clamp(dragStartTop + dy, margin, maxTop);
+        lp.gravity = Gravity.NO_GRAVITY;
+        windowFrame.setLayoutParams(lp);
+    }
+
+    private void resizeCustomWindow(int dx, int dy) {
+        FrameLayout.LayoutParams lp =
+            (FrameLayout.LayoutParams)windowFrame.getLayoutParams();
+        int margin = dp(WINDOW_MARGIN_DP);
+        int minWidth = dp(MIN_WINDOW_WIDTH_DP);
+        int minHeight = dp(MIN_WINDOW_HEIGHT_DP);
+        int maxWidth = Math.max(minWidth, desktopRoot.getWidth() - lp.leftMargin - margin);
+        int maxHeight = Math.max(minHeight, desktopRoot.getHeight() - lp.topMargin - margin);
+        lp.width = clamp(dragStartWidth + dx, minWidth, maxWidth);
+        lp.height = clamp(dragStartHeight + dy, minHeight, maxHeight);
+        lp.gravity = Gravity.NO_GRAVITY;
+        windowFrame.setLayoutParams(lp);
+    }
+
+    private void minimizeCustomWindow() {
+        if (customMinimized)
+            return;
+        customMinimized = true;
+        windowFrame.setVisibility(View.GONE);
+        Toast.makeText(this, displayTitle, Toast.LENGTH_SHORT).show();
+    }
+
+    private void restoreCustomWindow(boolean requestCompositorRestore) {
+        customMinimized = false;
+        windowFrame.setVisibility(View.VISIBLE);
+        if (requestCompositorRestore && windowMinimizedByCompositor)
+            requestRestoreLastWindow();
+    }
+
+    private void toggleCustomMaximized() {
+        if (customMinimized)
+            restoreCustomWindow(true);
+        if (customMaximized) {
+            customMaximized = false;
+            windowFrame.setLayoutParams(copyWindowLayout(normalWindowLayout));
+            restoreButton.setText("[]");
+            return;
+        }
+
+        customMaximized = true;
+        normalWindowLayout = copyWindowLayout(
+            (FrameLayout.LayoutParams)windowFrame.getLayoutParams());
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT);
+        int margin = dp(WINDOW_MARGIN_DP);
+        lp.setMargins(margin, margin, margin, margin);
+        windowFrame.setLayoutParams(lp);
+        restoreButton.setText("[ ]");
+    }
+
+    private void normalizeWindowLayout(FrameLayout.LayoutParams lp) {
+        if (lp.gravity == Gravity.NO_GRAVITY)
+            return;
+        int parentWidth = desktopRoot.getWidth();
+        int parentHeight = desktopRoot.getHeight();
+        if (parentWidth > 0)
+            lp.leftMargin = Math.max(0, (parentWidth - lp.width) / 2);
+        if (parentHeight > 0)
+            lp.topMargin = Math.max(0, (parentHeight - lp.height) / 2);
+        lp.gravity = Gravity.NO_GRAVITY;
+        windowFrame.setLayoutParams(lp);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     private void setupBackHandling() {
@@ -140,23 +454,16 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         }
     }
 
-    private void hideSystemBars() {
-        View decor = getWindow().getDecorView();
-        decor.setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-            View.SYSTEM_UI_FLAG_FULLSCREEN |
-            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
-    }
-
     private boolean updateSocketPath(Intent intent) {
         String nextSocketPath = ACGlassPrefs.getAndroidSocketPath(this);
         if (intent != null) {
             String appName = intent.getStringExtra(ACGlassPrefs.EXTRA_APP_NAME);
-            if (appName != null && !appName.isEmpty())
+            if (appName != null && !appName.isEmpty()) {
+                displayTitle = appName;
                 setTitle(appName);
+                if (titleText != null)
+                    titleText.setText(appName);
+            }
 
             String extraSocketPath = intent.getStringExtra(ACGlassPrefs.EXTRA_SOCKET);
             if (extraSocketPath != null && !extraSocketPath.isEmpty())
@@ -166,13 +473,23 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
                 intent.getStringExtra(ACGlassPrefs.EXTRA_CONTAINER_NAME);
             containerName = extraContainer == null ? null : extraContainer;
 
+            String extraCommand =
+                intent.getStringExtra(ACGlassPrefs.EXTRA_APP_COMMAND);
+            appCommand = extraCommand == null ? null : extraCommand;
+
             String extraAppId = intent.getStringExtra(ACGlassPrefs.EXTRA_APP_ID);
             if (extraAppId != null && !extraAppId.equals(appId)) {
                 activeWindowIds.clear();
                 emptyWindowExitGeneration++;
                 windowMinimizedByCompositor = false;
+                launchRequested = true;
+                launchStarted = false;
             }
             appId = extraAppId == null ? null : extraAppId;
+            if (appId == null) {
+                launchRequested = false;
+                launchStarted = false;
+            }
         }
         if (nextSocketPath == null || nextSocketPath.isEmpty())
             nextSocketPath = ACGlassPrefs.getAndroidSocketPath(this);
@@ -188,7 +505,6 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
     @Override
     protected void onResume() {
         super.onResume();
-        hideSystemBars();
         keepDisplayWhileBackgrounded = false;
         nativeSetSocketPath(socketPath);
         if (surfaceReady) {
@@ -216,7 +532,6 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
             lastBackPressTime = now;
             Toast.makeText(this, hasLaunchToken() ? BACK_CLOSE_APP :
                            BACK_CLOSE_MONITOR, Toast.LENGTH_SHORT).show();
-            hideSystemBars();
             return;
         }
 
@@ -295,13 +610,14 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         } else if (type == WINDOW_EVENT_MINIMIZED) {
             windowMinimizedByCompositor = true;
             keepDisplayWhileBackgrounded = true;
-            moveTaskToBack(true);
+            minimizeCustomWindow();
         } else if (type == WINDOW_EVENT_RESTORED || type == WINDOW_EVENT_OPENED) {
             if (windowId != 0)
                 activeWindowIds.add(windowId);
             emptyWindowExitGeneration++;
             windowMinimizedByCompositor = false;
             keepDisplayWhileBackgrounded = false;
+            restoreCustomWindow(false);
         }
     }
 
@@ -334,7 +650,42 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
 
     private boolean hasLaunchToken() {
         return containerName != null && !containerName.trim().isEmpty() &&
-            appId != null && !appId.trim().isEmpty();
+            appId != null && !appId.trim().isEmpty() &&
+            appCommand != null && !appCommand.trim().isEmpty();
+    }
+
+    private void launchLinuxAppAfterDisplayReady() {
+        if (!hasLaunchToken() || !launchRequested || launchStarted ||
+            closingFromBack)
+            return;
+
+        launchStarted = true;
+        String launchContainer = containerName;
+        String launchCommand = appCommand;
+        String launchAppId = appId;
+        new Thread(() -> {
+            try {
+                Log.i(TAG, "launching Linux app after display ready: " +
+                    launchAppId);
+                RootDroidspaces.launchApp(getApplicationContext(),
+                                          launchContainer, launchCommand,
+                                          launchAppId);
+            } catch (Exception e) {
+                if (RootDroidspaces.consumeStopRequested(launchAppId)) {
+                    Log.i(TAG, "Linux app stopped by user before launch: " +
+                        launchAppId);
+                    return;
+                }
+                Log.e(TAG, "failed to launch Linux app: " + launchAppId, e);
+                runOnUiThread(() -> Toast.makeText(this,
+                    "Launch failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                closingFromBack = true;
+                finishAndRemoveTask();
+            } finally {
+                launchRequested = false;
+                RootDroidspaces.consumeStopRequested(launchAppId);
+            }
+        }, "acglass-launch-ready").start();
     }
 
     private void closeFromBack() {
@@ -356,13 +707,6 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         }
 
         finishAndRemoveTask();
-    }
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (hasFocus)
-            hideSystemBars();
     }
 
     @Override
@@ -388,6 +732,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
             if (generation == displayGeneration) {
                 nativeStart(surface);
                 Log.i(TAG, "display started generation=" + generation);
+                runOnUiThread(this::launchLinuxAppAfterDisplayReady);
             }
         }, "acglass-display-start").start();
     }
@@ -401,6 +746,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
             if (generation == displayGeneration) {
                 nativeStart(surface);
                 Log.i(TAG, "display restarted generation=" + generation);
+                runOnUiThread(this::launchLinuxAppAfterDisplayReady);
             }
         }, "acglass-display-restart").start();
     }
@@ -417,6 +763,11 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        return super.onTouchEvent(event);
+    }
+
+    private boolean handleDisplayTouchEvent(MotionEvent event) {
+        surfaceView.requestFocus();
         if (isMouseEvent(event)) {
             int cls = event.getClassification();
             if (cls == CLASSIFICATION_TWO_FINGER_SWIPE)
@@ -430,12 +781,54 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
+        return handleRootGenericMotionEvent(event) ||
+            super.onGenericMotionEvent(event);
+    }
+
+    private boolean handleRootGenericMotionEvent(MotionEvent event) {
+        if (!isMouseEvent(event))
+            return false;
+
+        int[] surfaceLocation = new int[2];
+        surfaceView.getLocationOnScreen(surfaceLocation);
+        float x = event.getRawX() - surfaceLocation[0];
+        float y = event.getRawY() - surfaceLocation[1];
+
+        if (x < 0 || y < 0 || x >= surfaceView.getWidth() ||
+            y >= surfaceView.getHeight()) {
+            releaseSavedMouseButtons();
+            return event.getActionMasked() == MotionEvent.ACTION_HOVER_MOVE ||
+                event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER ||
+                event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT ||
+                event.getActionMasked() == MotionEvent.ACTION_SCROLL;
+        }
+
+        return handleDisplayGenericMotionEvent(event, x, y);
+    }
+
+    private boolean handleDisplayGenericMotionEvent(MotionEvent event,
+                                                    float x, float y) {
         if (isMouseEvent(event)) {
             int action = event.getActionMasked();
+            if (x < 0 || y < 0 || x >= surfaceView.getWidth() ||
+                y >= surfaceView.getHeight()) {
+                Log.i(TAG, "mouse outside display surface action=" + action +
+                    " x=" + x + " y=" + y + " surface=" +
+                    surfaceView.getWidth() + "x" + surfaceView.getHeight());
+                releaseSavedMouseButtons();
+                return action == MotionEvent.ACTION_HOVER_MOVE ||
+                    action == MotionEvent.ACTION_HOVER_ENTER ||
+                    action == MotionEvent.ACTION_HOVER_EXIT ||
+                    action == MotionEvent.ACTION_SCROLL;
+            }
             if (action == MotionEvent.ACTION_HOVER_MOVE) {
-                nativeSendMouseMotion(event.getX(), event.getY(),
+                nativeSendMouseMotion(x, y,
                                       event.getAxisValue(MotionEvent.AXIS_RELATIVE_X),
                                       event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y));
+                return true;
+            }
+            if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                releaseSavedMouseButtons();
                 return true;
             }
             if (action == MotionEvent.ACTION_SCROLL) {
@@ -448,7 +841,7 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
                 return true;
             }
         }
-        return super.onGenericMotionEvent(event);
+        return false;
     }
 
     @Override
@@ -521,6 +914,16 @@ public class DisplayActivity extends Activity implements SurfaceHolder.Callback 
         }
         savedBS = currentBS;
         return true;
+    }
+
+    private void releaseSavedMouseButtons() {
+        if (savedBS == 0)
+            return;
+        for (int[] btn : BUTTON_MAP) {
+            if ((savedBS & btn[0]) != 0)
+                nativeSendMouseButton(btn[1], false);
+        }
+        savedBS = 0;
     }
 
     private boolean handleTouchpadScroll(MotionEvent event) {
