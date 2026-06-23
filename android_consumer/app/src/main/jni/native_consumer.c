@@ -700,3 +700,90 @@ Java_com_acglass_app_DisplayActivity_nativeSendWindowCommand(
          command.type, command.window_id, ret);
     return ret > 0 ? JNI_TRUE : JNI_FALSE;
 }
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeSetSocketPath(
+    JNIEnv *env, jobject thiz, jstring socket_path)
+{
+    Java_com_acglass_app_DisplayActivity_nativeSetSocketPath(env, thiz,
+                                                             socket_path);
+}
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeStart(
+    JNIEnv *env, jobject thiz, jobject surface)
+{
+    Java_com_acglass_app_DisplayActivity_nativeStart(env, thiz, surface);
+}
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeStop(
+    JNIEnv *env, jobject thiz)
+{
+    Java_com_acglass_app_DisplayActivity_nativeStop(env, thiz);
+}
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeSendTouch(
+    JNIEnv *env, jobject thiz, jint action, jfloat x, jfloat y,
+    jint pointer_id)
+{
+    Java_com_acglass_app_DisplayActivity_nativeSendTouch(env, thiz, action, x,
+                                                        y, pointer_id);
+}
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeSendTouchFrame(
+    JNIEnv *env, jobject thiz)
+{
+    Java_com_acglass_app_DisplayActivity_nativeSendTouchFrame(env, thiz);
+}
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeSendKey(
+    JNIEnv *env, jobject thiz, jint action, jint keycode)
+{
+    Java_com_acglass_app_DisplayActivity_nativeSendKey(env, thiz, action,
+                                                       keycode);
+}
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeSendMouseMotion(
+    JNIEnv *env, jobject thiz, jfloat x, jfloat y, jfloat dx, jfloat dy)
+{
+    Java_com_acglass_app_DisplayActivity_nativeSendMouseMotion(env, thiz, x, y,
+                                                               dx, dy);
+}
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeSendMouseButton(
+    JNIEnv *env, jobject thiz, jint button, jboolean pressed)
+{
+    Java_com_acglass_app_DisplayActivity_nativeSendMouseButton(env, thiz,
+                                                               button,
+                                                               pressed);
+}
+
+JNIEXPORT void JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeSendMouseScroll(
+    JNIEnv *env, jobject thiz, jint axis, jfloat value)
+{
+    Java_com_acglass_app_DisplayActivity_nativeSendMouseScroll(env, thiz,
+                                                               axis, value);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativePollWindowEvent(
+    JNIEnv *env, jobject thiz, jint timeout_ms)
+{
+    return Java_com_acglass_app_DisplayActivity_nativePollWindowEvent(
+        env, thiz, timeout_ms);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_acglass_app_DisplayOverlayService_nativeSendWindowCommand(
+    JNIEnv *env, jobject thiz, jint type, jint window_id)
+{
+    return Java_com_acglass_app_DisplayActivity_nativeSendWindowCommand(
+        env, thiz, type, window_id);
+}

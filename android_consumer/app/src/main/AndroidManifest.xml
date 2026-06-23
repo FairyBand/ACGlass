@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.acglass.app">
 
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <application
         android:label="ACGlass"
         android:theme="@android:style/Theme.Material.NoActionBar">
@@ -17,6 +21,14 @@
         <activity
             android:name=".SettingsActivity"
             android:exported="false" />
+        <service
+            android:name=".DisplayOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="display application overlay window" />
+        </service>
         <activity
             android:name=".DisplayActivity"
             android:exported="true"

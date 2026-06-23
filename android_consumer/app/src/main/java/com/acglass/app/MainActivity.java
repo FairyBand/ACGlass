@@ -2,10 +2,13 @@ package com.acglass.app;
 
 import android.app.Activity;
 import android.app.ActivityOptions;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.Rect;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
@@ -39,6 +42,7 @@ public class MainActivity extends Activity {
     private static final long STARTUP_FAILURE_WINDOW_MS = 8000;
     private static final int DISPLAY_WINDOW_WIDTH_DP = 960;
     private static final int DISPLAY_WINDOW_HEIGHT_DP = 640;
+    private static final boolean USE_OVERLAY_DISPLAY = true;
 
     private LinearLayout appList;
     private TextView statusText;
@@ -230,27 +234,86 @@ public class MainActivity extends Activity {
 
     private void openDisplayForApp(LinuxContainer container, LinuxApp app,
                                    String appId) {
+        if (USE_OVERLAY_DISPLAY && ensureOverlayPermission()) {
+            Intent intent = newDisplayIntent(container.name + ": " + app.name,
+                                             container.name, app.command,
+                                             appId);
+            intent.setComponent(new ComponentName(this,
+                DisplayOverlayService.class));
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O)
+                startForegroundService(intent);
+            else
+                startService(intent);
+            moveTaskToBack(true);
+            return;
+        }
+
         Intent intent = new Intent(this, DisplayActivity.class);
+        intent.putExtras(newDisplayIntent(container.name + ": " + app.name,
+                                          container.name, app.command,
+                                          appId));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT |
                         Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
-        intent.putExtra(ACGlassPrefs.EXTRA_SOCKET,
-                        ACGlassPrefs.getAndroidSocketPath(this));
-        intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME,
-                        container.name + ": " + app.name);
-        intent.putExtra(ACGlassPrefs.EXTRA_APP_COMMAND, app.command);
-        intent.putExtra(ACGlassPrefs.EXTRA_CONTAINER_NAME, container.name);
-        intent.putExtra(ACGlassPrefs.EXTRA_APP_ID, appId);
         startActivity(intent, makeDisplayLaunchOptions());
     }
 
     private void openWaylandMonitor() {
+        if (USE_OVERLAY_DISPLAY && ensureOverlayPermission()) {
+            Intent intent = newDisplayIntent(WAYLAND_MONITOR_TITLE, null,
+                                             null, null);
+            intent.setComponent(new ComponentName(this,
+                DisplayOverlayService.class));
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O)
+                startForegroundService(intent);
+            else
+                startService(intent);
+            moveTaskToBack(true);
+            return;
+        }
+
         Intent intent = new Intent(this, DisplayActivity.class);
+        intent.putExtras(newDisplayIntent(WAYLAND_MONITOR_TITLE, null,
+                                          null, null));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT |
                         Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        startActivity(intent, makeDisplayLaunchOptions());
+    }
+
+    private Intent newDisplayIntent(String title, String container,
+                                    String command, String appId) {
+        Intent intent = new Intent();
         intent.putExtra(ACGlassPrefs.EXTRA_SOCKET,
                         ACGlassPrefs.getAndroidSocketPath(this));
-        intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME, WAYLAND_MONITOR_TITLE);
-        startActivity(intent, makeDisplayLaunchOptions());
+        intent.putExtra(ACGlassPrefs.EXTRA_APP_NAME, title);
+        if (container != null)
+            intent.putExtra(ACGlassPrefs.EXTRA_CONTAINER_NAME, container);
+        if (command != null)
+            intent.putExtra(ACGlassPrefs.EXTRA_APP_COMMAND, command);
+        if (appId != null)
+            intent.putExtra(ACGlassPrefs.EXTRA_APP_ID, appId);
+        return intent;
+    }
+
+    private boolean ensureOverlayPermission() {
+        if (Settings.canDrawOverlays(this))
+            return true;
+
+        try {
+            RootDroidspaces.runRootCommandForAppOps(
+                "appops set " + getPackageName() +
+                " SYSTEM_ALERT_WINDOW allow");
+        } catch (Exception e) {
+            Log.w(TAG, "failed to grant overlay appop", e);
+        }
+        if (Settings.canDrawOverlays(this))
+            return true;
+
+        Toast.makeText(this, "Please allow ACGlass to display over other apps",
+                       Toast.LENGTH_LONG).show();
+        Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:" + getPackageName()));
+        startActivity(intent);
+        return false;
     }
 
     private Bundle makeDisplayLaunchOptions() {

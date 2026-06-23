@@ -224,6 +224,11 @@ final class RootDroidspaces {
         }
     }
 
+    static String runRootCommandForAppOps(String command)
+        throws IOException, InterruptedException {
+        return runRootCommand(command);
+    }
+
     private static void markStopRequested(String appId) {
         synchronized (STOP_REQUESTED) {
             STOP_REQUESTED.add(appId.trim());
